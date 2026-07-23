@@ -1,0 +1,13 @@
+{
+  "name": "Buscador de Inmuebles — Sofymar IA",
+  "short_name": "Buscador",
+  "description": "Buscador de propiedades para agentes inmobiliarios en Santa Cruz de la Sierra.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0e1a",
+  "theme_color": "#ea7c52",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

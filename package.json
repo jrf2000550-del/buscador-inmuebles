@@ -1,0 +1,12 @@
+{
+  "name": "buscador-inmuebles",
+  "version": "1.0.0",
+  "description": "Buscador de inmuebles con IA — Century 21 y RE/MAX Bolivia",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^0.40.0"
+  }
+}
