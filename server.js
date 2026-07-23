@@ -907,7 +907,8 @@ async function buscarTodo(req) {
 function mediana(numsOrdenados) {
   const n = numsOrdenados.length;
   const mitad = Math.floor(n / 2);
-  return n % 2 !== 0 ? numsOrdenados[mitad] : Math.round((numsOrdenados[mitad - 1] + numsOrdenados[mitad]) / 2);
+  const valor = n % 2 !== 0 ? numsOrdenados[mitad] : (numsOrdenados[mitad - 1] + numsOrdenados[mitad]) / 2;
+  return Math.round(valor);
 }
 
 function calcularEstadisticasMercado(items, tipo) {
