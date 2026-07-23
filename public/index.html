@@ -590,7 +590,7 @@ async function iniciarSesion() {
     return false;
   }
   if (quien.requiereAuth && !quien.agente) {
-    if (API_KEY) mostrarGate('Tu sesión ya no es válida. Iniciá sesión de nuevo.');
+    mostrarGate(API_KEY ? 'Tu sesión ya no es válida. Iniciá sesión de nuevo.' : null);
     return false;
   }
   ocultarGate();
