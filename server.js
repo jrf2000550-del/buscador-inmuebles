@@ -7,6 +7,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 // Carga simple de .env (para la API key de IA), sin dependencias.
 (function cargarEnv() {
@@ -78,6 +79,11 @@ function leerAgentes() {
   }
 }
 
+function guardarAgentes(lista) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(AGENTES_FILE, JSON.stringify(lista, null, 2));
+}
+
 function modoMultiagente() {
   return leerAgentes().some((a) => a.activo !== false);
 }
@@ -86,6 +92,70 @@ function autenticar(req) {
   const key = req.headers['x-api-key'];
   if (!key) return null;
   return leerAgentes().find((a) => a.apiKey === key && a.activo !== false) || null;
+}
+
+// ---------- Cuentas propias (registro/login, además de las keys por CLI) ----------
+// Cada agente crea su propia cuenta (nombre + email + contraseña) en vez de
+// pedirle la clave a José Luis — la contraseña nunca se guarda en texto
+// plano (scrypt + sal, nativo de Node, sin dependencias). El resultado sigue
+// siendo el mismo apiKey de siempre (mismo aislamiento de datos por agente
+// que ya existía) — el registro/login son solo una forma más fácil de
+// conseguir esa key, no un sistema aparte.
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return { salt, hash };
+}
+
+function verificarPassword(password, salt, hash) {
+  const intento = crypto.scryptSync(password, salt, 64).toString('hex');
+  const bufIntento = Buffer.from(intento, 'hex');
+  const bufReal = Buffer.from(hash, 'hex');
+  return bufIntento.length === bufReal.length && crypto.timingSafeEqual(bufIntento, bufReal);
+}
+
+function emailValido(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || '').trim());
+}
+
+function registrarAgente({ nombre, email, password }) {
+  nombre = String(nombre || '').trim();
+  email = String(email || '').trim().toLowerCase();
+  if (!nombre) throw new Error('Falta el nombre.');
+  if (!emailValido(email)) throw new Error('El email no es válido.');
+  if (!password || password.length < 6) throw new Error('La contraseña debe tener al menos 6 caracteres.');
+
+  const lista = leerAgentes();
+  if (lista.some((a) => (a.email || '').toLowerCase() === email)) {
+    throw new Error('Ya existe una cuenta con ese email.');
+  }
+  const { salt, hash } = hashPassword(password);
+  const nuevo = {
+    id: crypto.randomBytes(4).toString('hex'),
+    nombre,
+    email,
+    passwordSalt: salt,
+    passwordHash: hash,
+    apiKey: 'sof_' + crypto.randomBytes(24).toString('hex'),
+    creado: new Date().toISOString(),
+    activo: true,
+  };
+  lista.push(nuevo);
+  guardarAgentes(lista);
+  return nuevo;
+}
+
+function loginAgente({ email, password }) {
+  email = String(email || '').trim().toLowerCase();
+  const lista = leerAgentes();
+  const agente = lista.find((a) => (a.email || '').toLowerCase() === email && a.activo !== false);
+  // Mismo mensaje de error para "no existe" y "contraseña incorrecta" — no
+  // hay que darle pistas a quien intenta entrar de que un email existe o no.
+  const credencialesInvalidas = () => new Error('Email o contraseña incorrectos.');
+  if (!agente || !agente.passwordHash) throw credencialesInvalidas();
+  if (!verificarPassword(password || '', agente.passwordSalt, agente.passwordHash)) throw credencialesInvalidas();
+  return agente;
 }
 
 // ---------- Almacenamiento de requerimientos ----------
@@ -1048,9 +1118,32 @@ async function manejarRequest(req, res) {
     });
   }
 
+  // Registro y login: exentos del chequeo de key de acá abajo — obviamente,
+  // todavía no tienen una. Devuelven el apiKey de siempre (mismo mecanismo
+  // de aislamiento por agente que ya existía) para que el frontend lo guarde
+  // igual que si José Luis les hubiera pasado un link con key.
+  if (url.pathname === '/api/registrar' && req.method === 'POST') {
+    const body = await leerBody(req);
+    try {
+      const agenteNuevo = registrarAgente(body);
+      return json(res, 200, { apiKey: agenteNuevo.apiKey, nombre: agenteNuevo.nombre });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+  if (url.pathname === '/api/login' && req.method === 'POST') {
+    const body = await leerBody(req);
+    try {
+      const agenteLogueado = loginAgente(body);
+      return json(res, 200, { apiKey: agenteLogueado.apiKey, nombre: agenteLogueado.nombre });
+    } catch (e) {
+      return json(res, 401, { error: e.message });
+    }
+  }
+
   // En modo multiagente, toda otra ruta /api/* exige una key válida.
   if (url.pathname.startsWith('/api/') && requiereAuth && !agente) {
-    return json(res, 401, { error: 'Falta una clave de acceso válida (header X-Api-Key). Pedila a José Luis.' });
+    return json(res, 401, { error: 'Falta iniciar sesión o tener una clave de acceso válida.' });
   }
 
   const agenteId = agente ? agente.id : null;

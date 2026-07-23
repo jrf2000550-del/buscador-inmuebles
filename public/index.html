@@ -296,6 +296,18 @@
   #gate h2 { font-family: var(--font-display); font-size: 20px; font-weight: 800; letter-spacing: -.02em; margin: 0; }
   #gate p { color: var(--muted); font-size: 13px; line-height: 1.5; margin: 0; }
   #gate .error { color: var(--danger); font-size: 13px; display: none; }
+  #gate .error.visible { display: block; }
+
+  .auth-tabs { display: flex; gap: 4px; background: var(--bg-elevated); border-radius: var(--radius-xs); padding: 4px; }
+  .auth-tab {
+    flex: 1; background: transparent; color: var(--muted); font-weight: 700; font-size: 13px;
+    padding: 8px; border-radius: var(--radius-xs); box-shadow: none;
+  }
+  .auth-tab:hover { color: var(--text); filter: none; transform: none; box-shadow: none; }
+  .auth-tab.activo { background: var(--panel-2); color: var(--text); }
+  .auth-tab.activo:hover { filter: none; }
+
+  .auth-form { display: grid; gap: 12px; }
 
   .sesion { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
   .sesion strong { color: var(--text); }
@@ -305,11 +317,46 @@
 <body>
 <div id="gate">
   <div class="caja">
-    <h2>Acceso al Buscador de Inmuebles</h2>
-    <p>Pedile tu clave de acceso a José Luis e ingresala acá.</p>
-    <label>Clave de acceso <input id="gateKey" type="text" placeholder="sof_..."></label>
-    <p class="error" id="gateError">Clave inválida. Probá de nuevo.</p>
-    <button type="button" id="gateBtn">Entrar</button>
+    <div class="logo" style="margin-bottom: 4px">
+      <div class="icono">
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M3 11.5L12 4l9 7.5" stroke="#2c1206" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M5.5 10v9a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-9" stroke="#2c1206" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M10 20v-5.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1V20" stroke="#2c1206" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div>
+        <h2 style="margin:0">Buscador de Inmuebles</h2>
+        <div class="subt">Sofymar IA</div>
+      </div>
+    </div>
+
+    <div class="auth-tabs">
+      <button type="button" class="auth-tab activo" id="tabLogin">Iniciar sesión</button>
+      <button type="button" class="auth-tab" id="tabRegistro">Crear cuenta</button>
+    </div>
+
+    <form id="formLogin" class="auth-form">
+      <label>Email <input name="email" type="email" required placeholder="vos@ejemplo.com" autocomplete="username"></label>
+      <label>Contraseña <input name="password" type="password" required placeholder="••••••••" autocomplete="current-password"></label>
+      <p class="error" id="loginError"></p>
+      <button type="submit">Entrar</button>
+    </form>
+
+    <form id="formRegistro" class="auth-form" style="display:none">
+      <label>Nombre <input name="nombre" required placeholder="Tu nombre"></label>
+      <label>Email <input name="email" type="email" required placeholder="vos@ejemplo.com" autocomplete="username"></label>
+      <label>Contraseña <input name="password" type="password" required placeholder="Mínimo 6 caracteres" autocomplete="new-password"></label>
+      <p class="error" id="registroError"></p>
+      <button type="submit">Crear mi cuenta</button>
+    </form>
+
+    <button type="button" class="btn-fantasma" id="btnUsarKey" style="margin-top: 2px">¿Tenés una clave de acceso? Usarla en vez de una cuenta</button>
+    <form id="formKey" class="auth-form" style="display:none">
+      <label>Clave de acceso <input id="gateKey" type="text" placeholder="sof_..."></label>
+      <p class="error" id="gateError"></p>
+      <button type="button" id="gateBtn">Entrar con la clave</button>
+    </form>
   </div>
 </div>
 <header>
@@ -481,11 +528,42 @@ let API_KEY = localStorage.getItem('buscadorApiKey') || '';
 
 function mostrarGate(error) {
   $('#gate').style.display = 'flex';
-  $('#gateError').style.display = error ? 'block' : 'none';
-  if (error) $('#gateError').textContent = error;
+  if (error) {
+    const activo = $('.auth-form:not([style*="display: none"])') || $('#formLogin');
+    const err = activo.querySelector('.error');
+    if (err) { err.textContent = error; err.classList.add('visible'); }
+  }
 }
 function ocultarGate() {
   $('#gate').style.display = 'none';
+}
+
+// Pestañas de la pantalla de acceso: Iniciar sesión / Crear cuenta / (clave
+// vieja, para links ?key=... ya repartidos o cuentas creadas por CLI).
+function activarTab(tab) {
+  $('#tabLogin').classList.toggle('activo', tab === 'login');
+  $('#tabRegistro').classList.toggle('activo', tab === 'registro');
+  $('#formLogin').style.display = tab === 'login' ? 'grid' : 'none';
+  $('#formRegistro').style.display = tab === 'registro' ? 'grid' : 'none';
+  $('#formKey').style.display = 'none';
+  $$('#gate .error').forEach((e) => e.classList.remove('visible'));
+}
+$('#tabLogin').addEventListener('click', () => activarTab('login'));
+$('#tabRegistro').addEventListener('click', () => activarTab('registro'));
+$('#btnUsarKey').addEventListener('click', () => {
+  const visible = $('#formKey').style.display !== 'none';
+  $('#formKey').style.display = visible ? 'none' : 'grid';
+  $('#formLogin').style.display = 'none';
+  $('#formRegistro').style.display = 'none';
+  $('#tabLogin').classList.remove('activo');
+  $('#tabRegistro').classList.remove('activo');
+});
+
+// Guarda la key recibida (de login, registro o pegada a mano) y entra a la
+// app — recarga para arrancar todo limpio, mismo criterio que "Salir".
+function entrarConKey(key) {
+  localStorage.setItem('buscadorApiKey', key);
+  location.reload();
 }
 
 // Todas las llamadas a la API pasan por acá: agrega la key y, si el servidor
@@ -497,7 +575,7 @@ async function apiFetch(url, opciones = {}) {
   if (resp.status === 401) {
     localStorage.removeItem('buscadorApiKey');
     API_KEY = '';
-    mostrarGate('Tu clave ya no es válida. Pedí una nueva.');
+    mostrarGate('Tu sesión ya no es válida. Iniciá sesión de nuevo.');
     throw new Error('401 sin autorización');
   }
   return resp;
@@ -512,7 +590,7 @@ async function iniciarSesion() {
     return false;
   }
   if (quien.requiereAuth && !quien.agente) {
-    mostrarGate(API_KEY ? 'Clave inválida. Probá de nuevo.' : null);
+    if (API_KEY) mostrarGate('Tu sesión ya no es válida. Iniciá sesión de nuevo.');
     return false;
   }
   ocultarGate();
@@ -524,16 +602,53 @@ async function iniciarSesion() {
       localStorage.removeItem('buscadorApiKey');
       location.reload();
     });
+  } else {
+    // Modo abierto (todavía nadie se registró): igual se ofrece crear
+    // cuenta desde el header, sin bloquear el uso mientras tanto.
+    $('#sesionInfo').style.display = 'flex';
+    $('#sesionInfo').innerHTML = '<button type="button" class="btn-secundario" id="btnCrearCuentaHeader">Crear cuenta</button>';
+    $('#btnCrearCuentaHeader').addEventListener('click', () => {
+      activarTab('registro');
+      mostrarGate();
+    });
   }
   return true;
 }
 
+$('#formLogin').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const datos = Object.fromEntries(new FormData(e.target));
+  const err = $('#loginError');
+  err.classList.remove('visible');
+  try {
+    const resp = await fetch('/api/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(datos),
+    });
+    const data = await resp.json();
+    if (!resp.ok) { err.textContent = data.error || 'No se pudo iniciar sesión.'; err.classList.add('visible'); return; }
+    entrarConKey(data.apiKey);
+  } catch { err.textContent = 'No se pudo conectar con el servidor.'; err.classList.add('visible'); }
+});
+
+$('#formRegistro').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const datos = Object.fromEntries(new FormData(e.target));
+  const err = $('#registroError');
+  err.classList.remove('visible');
+  try {
+    const resp = await fetch('/api/registrar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(datos),
+    });
+    const data = await resp.json();
+    if (!resp.ok) { err.textContent = data.error || 'No se pudo crear la cuenta.'; err.classList.add('visible'); return; }
+    entrarConKey(data.apiKey);
+  } catch { err.textContent = 'No se pudo conectar con el servidor.'; err.classList.add('visible'); }
+});
+
 $('#gateBtn').addEventListener('click', () => {
   const k = $('#gateKey').value.trim();
   if (!k) return;
-  API_KEY = k;
-  localStorage.setItem('buscadorApiKey', k);
-  iniciarSesion();
+  entrarConKey(k);
 });
 $('#gateKey').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') $('#gateBtn').click();
@@ -860,10 +975,11 @@ function actualizarChipsActivos() {
 }
 $('#inputZona').addEventListener('input', actualizarChipsActivos);
 
-(async () => {
+async function iniciarSesionYArrancar() {
   const ok = await iniciarSesion();
   if (ok) iniciarApp();
-})();
+}
+iniciarSesionYArrancar();
 
 // Interpreta un pedido en lenguaje natural: primero IA, si no, intérprete local
 async function interpretarPedido(texto) {
