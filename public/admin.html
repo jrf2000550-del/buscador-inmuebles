@@ -104,6 +104,15 @@
       <h2>Agentes registrados</h2>
       <div id="tablaAgentes"></div>
     </div>
+    <div class="panel">
+      <h2>Mobiliario App</h2>
+      <p style="color:var(--muted); font-size:13px; margin:0 0 12px">
+        Se sincroniza sola en segundo plano cada 20 horas. Usá este botón si acabás de corregir algo en el código
+        de esa fuente y no querés esperar.
+      </p>
+      <button type="button" class="chico" id="btnResyncMobiliario">Forzar resincronización ahora</button>
+      <p id="resyncEstado" style="color:var(--muted); font-size:12px; margin:10px 0 0"></p>
+    </div>
   </main>
 </div>
 
@@ -184,6 +193,12 @@ async function toggleAgente(id, estaActivo) {
   await adminFetch(`/api/admin/agentes/${id}/${accion}`, { method: 'POST' });
   cargarAgentes();
 }
+
+$('#btnResyncMobiliario').addEventListener('click', async () => {
+  $('#resyncEstado').textContent = 'Arrancando…';
+  const resp = await (await adminFetch('/api/admin/mobiliario-resincronizar', { method: 'POST' })).json();
+  $('#resyncEstado').textContent = resp.motivo || 'Sincronizando en segundo plano — puede tardar varios minutos con ~7.900 propiedades.';
+});
 
 if (ADMIN_KEY) entrar();
 </script>

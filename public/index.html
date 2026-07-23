@@ -216,10 +216,24 @@
   .fuente-ok { background: var(--ok-soft); color: #86efac; }
   .fuente-mal { background: var(--danger-soft); color: #ffb4b4; }
 
-  #btnMapa { background: var(--panel); color: var(--info); border: 1px solid var(--border); font-weight: 700; padding: 8px 15px; border-radius: 999px; font-size: 12.5px; box-shadow: none; }
-  #btnMapa:hover { border-color: var(--info); filter: none; transform: none; box-shadow: var(--shadow-sm); }
+  #btnMapa, #btnACM { background: var(--panel); color: var(--info); border: 1px solid var(--border); font-weight: 700; padding: 8px 15px; border-radius: 999px; font-size: 12.5px; box-shadow: none; margin-right: 8px; }
+  #btnMapa:hover, #btnACM:hover { border-color: var(--info); filter: none; transform: none; box-shadow: var(--shadow-sm); }
   #mapaWrap { margin-bottom: 20px; margin-top: 10px; }
   #mapa { height: 420px; border-radius: var(--radius); border: 1px solid var(--border-soft); background: var(--panel); box-shadow: var(--shadow); }
+
+  #acmWrap { margin: 10px 0 20px; }
+  .acm-reporte {
+    background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--border-soft);
+    border-radius: var(--radius); padding: 20px; box-shadow: var(--shadow);
+  }
+  .acm-reporte h3 { margin: 0 0 4px; font-size: 16px; font-weight: 800; letter-spacing: -.01em; }
+  .acm-reporte .acm-sub { color: var(--muted); font-size: 12.5px; margin-bottom: 16px; }
+  .acm-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .acm-stat { background: var(--panel-2); border-radius: var(--radius-sm); padding: 12px 14px; }
+  .acm-stat .num { font-size: 19px; font-weight: 800; color: var(--accent-light); letter-spacing: -.01em; }
+  .acm-stat .lbl { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .acm-narrativa { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px 16px; font-size: 14px; line-height: 1.6; white-space: pre-line; }
+  .acm-cargando { color: var(--accent); font-size: 13px; }
   .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--panel-2); color: var(--text); }
   .leaflet-popup-content { font-size: 13px; line-height: 1.5; }
   .leaflet-popup-content a { color: var(--info); }
@@ -495,10 +509,15 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 6v16l7-4 8 4 7-4V2l-7 4-8-4-7 4z"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
       <span id="btnMapaTxt">Ver en mapa</span>
     </button>
+    <button type="button" id="btnACM" class="btn-icono" style="display:none">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>
+      <span id="btnACMTxt">Generar ACM</span>
+    </button>
     <div id="mapaWrap" style="display:none">
       <p class="sub" id="mapaInfo"></p>
       <div id="mapa"></div>
     </div>
+    <div id="acmWrap" style="display:none"></div>
     <div id="zona-resultados"><p class="vacio">Sin búsqueda todavía.</p></div>
   </section>
 </main>
@@ -724,6 +743,56 @@ $('#btnMapa').addEventListener('click', () => {
   if (!abierto) setTimeout(() => mostrarMapa(ultimosListados), 0);
 });
 
+// ---------- Análisis Comparativo de Mercado (ACM) ----------
+
+let ultimosParamsBusqueda = null;
+let ultimosAnalisisMercado = null;
+
+function formatoUsd(n) {
+  return n == null ? '—' : 'U$S ' + Math.round(n).toLocaleString('es-BO');
+}
+
+function renderAcm(stats, narrativaIA) {
+  const campo = stats.campoM2Usado === 'm2Terreno' ? 'm² de terreno' : 'm² construido';
+  $('#acmWrap').innerHTML = `
+    <div class="acm-reporte">
+      <h3>Análisis Comparativo de Mercado</h3>
+      <p class="acm-sub">Basado en ${stats.cantidadComparables} propiedad(es) comparable(s) encontradas ahora mismo.</p>
+      <div class="acm-stats">
+        <div class="acm-stat"><div class="num">${formatoUsd(stats.precioMediana)}</div><div class="lbl">Precio mediana</div></div>
+        <div class="acm-stat"><div class="num">${formatoUsd(stats.precioPromedio)}</div><div class="lbl">Precio promedio</div></div>
+        <div class="acm-stat"><div class="num">${formatoUsd(stats.precioMin)} – ${formatoUsd(stats.precioMax)}</div><div class="lbl">Rango de precios</div></div>
+        ${stats.precioM2Mediana ? `<div class="acm-stat"><div class="num">${formatoUsd(stats.precioM2Mediana)}</div><div class="lbl">Mediana por ${campo}</div></div>` : ''}
+      </div>
+      ${narrativaIA
+        ? `<div class="acm-narrativa">${narrativaIA.replace(/\n/g, '<br>')}</div>`
+        : IA_ACTIVA
+          ? '<p class="acm-cargando">Generando análisis con IA…</p>'
+          : '<p class="sub" style="margin:0">Activá la IA para un análisis con recomendación redactada — por ahora se muestran solo las estadísticas.</p>'}
+    </div>
+  `;
+}
+
+$('#btnACM').addEventListener('click', async () => {
+  if (!ultimosAnalisisMercado || !ultimosParamsBusqueda) return;
+  const abierto = $('#acmWrap').style.display !== 'none';
+  if (abierto) { $('#acmWrap').style.display = 'none'; $('#btnACMTxt').textContent = 'Generar ACM'; return; }
+
+  $('#acmWrap').style.display = 'block';
+  $('#btnACMTxt').textContent = 'Ocultar ACM';
+  renderAcm(ultimosAnalisisMercado, null);
+  if (!IA_ACTIVA) return;
+
+  const params = new URLSearchParams(ultimosParamsBusqueda);
+  params.set('acm', '1');
+  try {
+    const data = await (await apiFetch('/api/buscar?' + params)).json();
+    renderAcm(data.analisisMercado || ultimosAnalisisMercado, data.analisisMercadoIA);
+  } catch {
+    renderAcm(ultimosAnalisisMercado, null);
+  }
+});
+
 async function cargarRequerimientos() {
   const lista = await (await apiFetch('/api/requerimientos')).json();
   $('#listaReq').innerHTML = lista.length
@@ -784,11 +853,15 @@ async function buscar(r) {
   $('#btnMapa').style.display = 'none';
   $('#mapaWrap').style.display = 'none';
   $('#btnMapaTxt').textContent = 'Ver en mapa';
+  $('#btnACM').style.display = 'none';
+  $('#acmWrap').style.display = 'none';
+  $('#acmWrap').innerHTML = '';
 
   const params = new URLSearchParams();
   for (const k of ['operacion','tipo','zona','precioMin','precioMax','moneda','tc','dormitorios','banos','m2TerrenoMin','m2TerrenoMax','m2ConstruccionMin','m2ConstruccionMax','palabras','excluir','filtroEstricto','antiguedadMaxDias']) {
     if (r[k]) params.set(k, r[k]);
   }
+  ultimosParamsBusqueda = new URLSearchParams(params); // se reusan para pedir el ACM sin repetir todo
   if (IA_ACTIVA) params.set('resumir', '1');
   const data = await (await apiFetch('/api/buscar?' + params)).json();
 
@@ -844,6 +917,8 @@ async function buscar(r) {
   ultimosListados = data.listados;
   const conUbicacion = data.listados.filter((i) => i.lat && i.lon).length;
   $('#btnMapa').style.display = conUbicacion ? 'inline-flex' : 'none';
+  ultimosAnalisisMercado = data.analisisMercado || null;
+  $('#btnACM').style.display = ultimosAnalisisMercado && ultimosAnalisisMercado.cantidadComparables >= 3 ? 'inline-flex' : 'none';
 
   $('#zona-resultados').innerHTML = nota + '<div class="grid">' + data.listados.map((i) => `
     <div class="card">

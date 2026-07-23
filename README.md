@@ -6,6 +6,14 @@ acceso y sus propios requerimientos guardados, sin ver los del resto).
 
 ## Qué hace
 
+- **Análisis Comparativo de Mercado (ACM)**: botón "Generar ACM" en los
+  resultados — calcula estadísticas reales sobre los comparables encontrados
+  (mediana y promedio de precio, rango, mediana de precio por m²) y, si la IA
+  está activa, redacta un análisis breve con rango de valor sugerido,
+  comparables destacados y una recomendación práctica. La mediana se usa como
+  referencia principal (no el promedio) porque un par de avisos con precio
+  atípico no debería mover tanto la referencia — igual que hace un tasador de
+  verdad. Aparece solo cuando hay 3+ comparables con precio.
 - **Trae TODOS los avisos reales, no solo los primeros**: C21 y RE/MAX pagan
   automáticamente hasta traer el catálogo completo de cada categoría (antes
   se cortaba en 200 y 60 avisos respectivamente — se estaba perdiendo hasta
@@ -327,6 +335,17 @@ se clasifica como venta por defecto si el título no dice "alquiler"
 explícitamente; puede aparecer alguna propiedad en anticrético mezclada en
 resultados de venta.
 
+**Bug de moneda corregido (2026-07-23)**: varios avisos de esta fuente cotizan
+en bolivianos (`offers.priceCurrency: "BOB"` en el schema), no todos en
+dólares como se asumió al principio — se estaba tomando ese número
+directamente como si fueran dólares, inflando el precio ~7x (una casa a
+"Bs 10.440.000" se leía como "US$ 10.440.000"). Ahora se guarda el precio
+crudo + la moneda tal cual en la sincronización, y la conversión a US$ pasa
+recién en cada búsqueda con el tipo de cambio vigente — mismo criterio que
+BienInmuebles. Si en el futuro hace falta forzar que la caché ya sincronizada
+se vuelva a procesar entera (por un fix como este), usar el botón
+"Forzar resincronización ahora" en `/admin.html`.
+
 ## Sobre Bolivia Inmuebles (boliviainmuebles.com)
 
 Portal similar en propósito a este mismo buscador. José Luis pidió sumarlo
@@ -414,12 +433,28 @@ sería un camino legítimo si en algún momento interesa.
 - Si el equipo crece mucho, dar a cada agente su propia key de Anthropic en
   vez de compartir la tuya (hoy el gasto de IA es todo con tu cuenta).
 
+## Panel de administración (/admin.html)
+
+Página aparte para José Luis — ver quién se registró y cuánto se usa la app,
+sin necesitar la terminal (útil sobre todo para el deploy público, donde no
+se puede correr `scripts/agentes.js` directo contra los datos remotos).
+
+- Gateado con `ADMIN_KEY` (variable de entorno, separada de las cuentas de
+  agente — no hace falta "ser un agente" para entrar acá).
+- Muestra: nombre, email, cómo se dio de alta (cuenta propia o clave por
+  CLI), fecha de registro, cuántos requerimientos tiene guardados cada uno,
+  y un botón para activar/revocar la cuenta ahí mismo.
+- Visitas: contador simple por día (sin IP ni nada identificable de la
+  persona — solo cuántas veces se abrió la página principal).
+
 ## Seguridad de las claves
 
 - `data/agentes.json` tiene las claves en texto plano — está en `.gitignore`,
-  nunca lo subas a un repo público.
-- Una clave revocada (`node scripts/agentes.js revocar <id>`) deja de
-  funcionar al toque; el agente ve la pantalla de acceso de nuevo.
+  nunca lo subas a un repo público. Las contraseñas de las cuentas propias
+  (registro/login) sí están hasheadas (scrypt), pero las `apiKey` en sí son
+  tokens en texto plano, como cualquier API key.
+- Una clave revocada (desde `/admin.html` o `node scripts/agentes.js revocar <id>`)
+  deja de funcionar al toque; el agente ve la pantalla de acceso de nuevo.
 - Los datos de cada agente quedan en su propio archivo
   (`data/requerimientos-<id>.json`) — borrar ese archivo borra sus
   requerimientos sin tocar los de otros agentes.

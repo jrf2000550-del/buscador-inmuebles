@@ -599,12 +599,22 @@ function normalizarMobiliario(entidad, breadcrumbJson, url) {
   const { operacion, tipo, categoriaTexto } = categoriaDesdeBreadcrumb(breadcrumbJson);
   if (!tipo) return null; // categoría no reconocida (ej. otro tipo de propiedad) — se descarta
   const m2 = entidad.floorSize?.value ? Math.round(Number(entidad.floorSize.value)) : null;
+  // El schema.org de cada aviso declara su propia moneda (offers.priceCurrency)
+  // — la mayoría son USD, pero varios están en Bs (bug real encontrado
+  // 2026-07-23: una casa a "Bs 10.440.000" se estaba leyendo como si fueran
+  // 10.44 millones de DÓLARES, inflando el precio ~7x). Como esta fuente se
+  // sincroniza en segundo plano (no en el momento de cada búsqueda), se
+  // guarda el precio crudo + moneda tal cual, y la conversión a US$ se hace
+  // recién en `fetchMobiliario` con el tipo de cambio de ese momento — igual
+  // que BienInmuebles.
+  const monedaCruda = String(entidad.offers?.priceCurrency || 'USD').toUpperCase() === 'BOB' ? 'bob' : 'usd';
   return {
     fuente: 'Mobiliario App',
     operacion,
     tipo,
     titulo: entidad.name || '(sin título)',
-    precio: entidad.offers?.price ? Math.round(Number(entidad.offers.price)) : null,
+    precioCrudo: entidad.offers?.price ? Math.round(Number(entidad.offers.price)) : null,
+    monedaCrudo: monedaCruda,
     dormitorios: entidad.numberOfBedroomsTotal > 0 ? entidad.numberOfBedroomsTotal : null,
     banos: entidad.numberOfBathroomsTotal > 0 ? entidad.numberOfBathroomsTotal : null,
     // El schema solo trae una medida (floorSize) — en terrenos es la
@@ -676,7 +686,13 @@ async function sincronizarMobiliario() {
   try {
     const sitemap = await obtenerListingsSitemap();
     const porId = { ...cache.listados };
-    const pendientes = sitemap.filter((s) => !porId[s.id] || porId[s.id].lastmod !== s.lastmod);
+    // Además de lo nuevo/modificado, re-procesa lo que quedó en el formato
+    // viejo (antes de guardar precioCrudo/monedaCrudo por separado, bug de
+    // conversión de moneda corregido 2026-07-23) — así una sola sincronización
+    // arregla sola los datos ya cacheados, sin tener que borrar nada a mano.
+    const pendientes = sitemap.filter(
+      (s) => !porId[s.id] || porId[s.id].lastmod !== s.lastmod || (porId[s.id].item && porId[s.id].item.precioCrudo === undefined)
+    );
 
     let fallosSeguidos = 0;
     for (let i = 0; i < pendientes.length; i += MOBILIARIO_LOTE) {
@@ -720,7 +736,7 @@ async function sincronizarMobiliario() {
 // Lee de la caché ya sincronizada (rápido, sin red) y filtra por lo que pide
 // este requerimiento — el mismo patrón de "traer todo y filtrar local" que
 // las otras 3 fuentes, salvo que acá "traer todo" ya pasó en segundo plano.
-async function fetchMobiliario(req) {
+async function fetchMobiliario(req, tc) {
   const cache = leerCacheMobiliario();
   if (!cache.sincronizadoEn && !cache.progreso) {
     throw new Error(
@@ -730,7 +746,12 @@ async function fetchMobiliario(req) {
   const items = Object.values(cache.listados)
     .map((v) => v.item)
     .filter((it) => it && it.operacion === req.operacion && it.tipo === req.tipo);
-  return items;
+  // Conversión a US$ acá (no al sincronizar) para usar siempre el tipo de
+  // cambio vigente de la búsqueda — mismo criterio que BienInmuebles.
+  return items.map((it) => ({
+    ...it,
+    precio: it.precioCrudo == null ? null : it.monedaCrudo === 'bob' ? Math.round(it.precioCrudo / tc) : it.precioCrudo,
+  }));
 }
 
 // ---------- Búsqueda combinada ----------
@@ -780,7 +801,7 @@ async function buscarTodo(req) {
     // servidor); el recorte fino con margen real se hace acá abajo.
     fetchConEstado('RE/MAX', fetchRemax(req, precioMinConMargen, precioMaxConMargen)),
     fetchConEstado('BienInmuebles', fetchBienInmuebles(req, tc)),
-    fetchConEstado('Mobiliario App', fetchMobiliario(req)),
+    fetchConEstado('Mobiliario App', fetchMobiliario(req, tc)),
   ]);
 
   let items = [...c21, ...remax, ...bien, ...mobiliario];
@@ -873,7 +894,85 @@ async function buscarTodo(req) {
     destacar,
     excluir,
     antiguedadMaxDias,
+    analisisMercado: calcularEstadisticasMercado(items, req.tipo),
   };
+}
+
+// ---------- Análisis Comparativo de Mercado (ACM) ----------
+// Estadísticas puras (sin IA, sin costo) sobre los mismos comparables que ya
+// trae la búsqueda — mediana de precio y de precio/m² son más confiables que
+// el promedio acá porque un par de avisos con error de tipeo o outliers de
+// lujo no deberían mover tanto la referencia.
+
+function mediana(numsOrdenados) {
+  const n = numsOrdenados.length;
+  const mitad = Math.floor(n / 2);
+  return n % 2 !== 0 ? numsOrdenados[mitad] : Math.round((numsOrdenados[mitad - 1] + numsOrdenados[mitad]) / 2);
+}
+
+function calcularEstadisticasMercado(items, tipo) {
+  const conPrecio = items.filter((i) => i.precio != null);
+  if (!conPrecio.length) return null;
+  const precios = conPrecio.map((i) => i.precio).sort((a, b) => a - b);
+
+  // Terreno se compara por precio/m² de terreno; el resto (casa, depto,
+  // local, oficina) por precio/m² construido.
+  const campoM2 = tipo === 'terreno' ? 'm2Terreno' : 'm2Construccion';
+  const conM2 = conPrecio.filter((i) => i[campoM2] > 0);
+  let precioM2Promedio = null;
+  let precioM2Mediana = null;
+  if (conM2.length) {
+    const preciosM2 = conM2.map((i) => i.precio / i[campoM2]).sort((a, b) => a - b);
+    precioM2Promedio = Math.round(preciosM2.reduce((s, p) => s + p, 0) / preciosM2.length);
+    precioM2Mediana = mediana(preciosM2);
+  }
+
+  return {
+    cantidadComparables: conPrecio.length,
+    cantidadConM2: conM2.length,
+    campoM2Usado: campoM2,
+    precioPromedio: Math.round(precios.reduce((s, p) => s + p, 0) / precios.length),
+    precioMediana: mediana(precios),
+    precioMin: precios[0],
+    precioMax: precios[precios.length - 1],
+    precioM2Promedio,
+    precioM2Mediana,
+  };
+}
+
+const PROMPT_ACM =
+  'Sos un tasador inmobiliario experto en Santa Cruz de la Sierra, Bolivia. Te paso los criterios de una ' +
+  'propiedad (el "sujeto" del análisis), estadísticas de mercado y una muestra de comparables reales. Armá un ' +
+  'Análisis Comparativo de Mercado (ACM) breve en español, sin emojis, con esta estructura en párrafos separados: ' +
+  '1) Rango de valor de mercado sugerido — usá la MEDIANA de precio/m² como referencia central (es más confiable ' +
+  'que el promedio si hay outliers), ajustá el rango según qué tan dispersos están los comparables; ' +
+  '2) Mencioná 2-3 comparables específicos relevantes (por precio, tamaño o ubicación) y por qué importan para la ' +
+  'referencia; ' +
+  '3) Una frase final con una recomendación práctica (ej. precio de publicación sugerido, o qué conviene ' +
+  'confirmar antes de dar un valor definitivo). Máximo 8 líneas en total. Sé honesto si hay pocos comparables o ' +
+  'son poco representativos — no inventes precisión que no existe con los datos disponibles.';
+
+function contextoACM(listados) {
+  return listados.slice(0, 20).map((i) => ({
+    fuente: i.fuente,
+    precio: i.precio,
+    zona: i.zona,
+    dormitorios: i.dormitorios,
+    banos: i.banos,
+    m2Terreno: i.m2Terreno,
+    m2Construccion: i.m2Construccion,
+    titulo: i.titulo,
+  }));
+}
+
+async function generarACM(req, listados, stats) {
+  if (!stats) return null;
+  const user =
+    `Propiedad sujeto (criterios buscados):\n${JSON.stringify(req)}\n\n` +
+    `Estadísticas de los comparables:\n${JSON.stringify(stats)}\n\n` +
+    `Muestra de comparables:\n${JSON.stringify(contextoACM(listados))}`;
+  const proveedor = estadoIA().proveedor;
+  return proveedor === 'gemini' ? await llamarGemini(PROMPT_ACM, user, false) : await llamarClaude(PROMPT_ACM, user, null);
 }
 
 // ---------- Capa de IA (opcional) ----------
@@ -1207,6 +1306,15 @@ async function manejarRequest(req, res) {
       return json(res, 200, { total, porDia: dias.slice(0, 30) });
     }
 
+    // Fuerza una sincronización de Mobiliario App ahora mismo, sin esperar
+    // las 20 horas de la sincronización automática (útil después de un fix
+    // en el código de esa fuente, o si se quiere refrescar antes de tiempo).
+    if (url.pathname === '/api/admin/mobiliario-resincronizar' && req.method === 'POST') {
+      if (sincronizandoMobiliario) return json(res, 200, { ok: true, motivo: 'Ya estaba sincronizando.' });
+      sincronizarMobiliario().catch((e) => console.error('Error sincronizando Mobiliario App:', e));
+      return json(res, 200, { ok: true });
+    }
+
     return json(res, 404, { error: 'Ruta de administración no encontrada.' });
   }
 
@@ -1294,6 +1402,13 @@ async function manejarRequest(req, res) {
           resultado.resumenIA = await resumirConIA(params, resultado.listados);
         } catch (e) {
           resultado.resumenIA = null;
+        }
+      }
+      if (iaDisponible() && params.acm === '1') {
+        try {
+          resultado.analisisMercadoIA = await generarACM(params, resultado.listados, resultado.analisisMercado);
+        } catch (e) {
+          resultado.analisisMercadoIA = null;
         }
       }
       return json(res, 200, resultado);
