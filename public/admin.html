@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel de administración — Buscador de Inmuebles</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#0a0e1a">
+<style>
+  :root {
+    --bg: #0a0e1a; --bg-elevated: #0f1524; --panel: #141b2e; --panel-2: #1a2338; --panel-3: #202b45;
+    --border: #263252; --border-soft: #1d2740; --text: #eef1f8; --muted: #8b95af; --muted-2: #5f6b89;
+    --accent: #ea7c52; --accent-2: #b8582f; --accent-light: #ff9d75; --accent-ink: #200d02;
+    --info: #2dd4bf; --info-2: #14b8a6; --ok: #4ade80; --ok-soft: #10281c;
+    --danger: #f36b6b; --danger-soft: #2c1414; --warn: #fbbf24; --warn-soft: #2e2306;
+    --radius-lg: 20px; --radius: 16px; --radius-sm: 11px; --radius-xs: 8px;
+    --shadow: 0 12px 32px -12px rgba(0,0,0,.55);
+    --font: -apple-system, 'Segoe UI', system-ui, Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: var(--font); color: var(--text); -webkit-font-smoothing: antialiased;
+    background: radial-gradient(1100px 480px at 105% -12%, rgba(234,124,82,.10), transparent),
+      radial-gradient(900px 420px at -8% 8%, rgba(45,212,191,.07), transparent), var(--bg);
+    min-height: 100vh;
+  }
+  header { padding: 18px 28px; border-bottom: 1px solid var(--border-soft); display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; font-weight: 800; letter-spacing: -.02em; margin: 0; }
+  header .subt { color: var(--muted); font-size: 12px; }
+  main { max-width: 980px; margin: 0 auto; padding: 28px; display: grid; gap: 24px; }
+
+  #gate { display: flex; align-items: center; justify-content: center; min-height: 70vh; }
+  #gate .caja {
+    background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: 34px; max-width: 360px; width: 100%; display: grid; gap: 14px; box-shadow: var(--shadow);
+  }
+  #gate h2 { margin: 0; font-size: 19px; font-weight: 800; }
+  #gate p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+  label { font-size: 12.5px; color: var(--muted); display: grid; gap: 6px; font-weight: 600; }
+  input {
+    background: var(--panel-2); border: 1.5px solid var(--border); color: var(--text); border-radius: var(--radius-xs);
+    padding: 10px 12px; font-size: 14px; width: 100%; font-family: inherit;
+  }
+  input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px rgba(234,124,82,.16); }
+  button {
+    background: linear-gradient(135deg, var(--accent-light), var(--accent) 60%, var(--accent-2)); color: #200d02;
+    font-weight: 800; border: 0; border-radius: var(--radius-xs); padding: 11px 16px; font-size: 14px; cursor: pointer;
+    font-family: inherit; box-shadow: 0 6px 18px -8px rgba(234,124,82,.55);
+  }
+  button:hover { filter: brightness(1.06); }
+  button.chico { padding: 6px 12px; font-size: 12px; box-shadow: none; }
+  button.fantasma { background: transparent; color: var(--muted); border: 1.5px solid var(--border); box-shadow: none; }
+  .error { color: var(--danger); font-size: 13px; display: none; }
+  .error.visible { display: block; }
+
+  .panel { background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius); padding: 20px; }
+  .panel h2 { margin: 0 0 14px; font-size: 15px; font-weight: 800; display: flex; align-items: center; gap: 9px; }
+  .panel h2::before { content: ''; width: 3px; height: 12px; border-radius: 3px; background: linear-gradient(180deg, var(--accent), var(--info)); }
+
+  .stats { display: flex; gap: 20px; flex-wrap: wrap; }
+  .stat { background: var(--panel-2); border-radius: var(--radius-sm); padding: 14px 18px; min-width: 120px; }
+  .stat .num { font-size: 26px; font-weight: 800; color: var(--accent-light); letter-spacing: -.01em; }
+  .stat .lbl { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted-2); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; padding: 8px 10px; border-bottom: 1px solid var(--border-soft); }
+  td { padding: 10px; border-bottom: 1px solid var(--border-soft); }
+  tr:last-child td { border-bottom: none; }
+  .badge { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
+  .badge.activo { background: var(--ok-soft); color: #86efac; }
+  .badge.revocado { background: var(--danger-soft); color: #ffb4b4; }
+  .vacio { color: var(--muted); text-align: center; padding: 30px; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div id="gate">
+  <div class="caja">
+    <h2>Panel de administración</h2>
+    <p>Clave de administrador (ADMIN_KEY del servidor).</p>
+    <label>Clave <input id="claveAdmin" type="password" placeholder="••••••••"></label>
+    <p class="error" id="gateError">Clave inválida.</p>
+    <button type="button" id="btnEntrar">Entrar</button>
+  </div>
+</div>
+
+<div id="app" style="display:none">
+  <header>
+    <div>
+      <h1>Panel de administración</h1>
+      <div class="subt">Buscador de Inmuebles — Sofymar IA</div>
+    </div>
+    <div style="margin-left:auto">
+      <button type="button" class="fantasma chico" id="btnSalir">Salir</button>
+    </div>
+  </header>
+  <main>
+    <div class="panel">
+      <h2>Visitas</h2>
+      <div class="stats" id="statsVisitas"></div>
+    </div>
+    <div class="panel">
+      <h2>Agentes registrados</h2>
+      <div id="tablaAgentes"></div>
+    </div>
+  </main>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let ADMIN_KEY = localStorage.getItem('buscadorAdminKey') || '';
+
+async function adminFetch(url, opciones = {}) {
+  const headers = { ...(opciones.headers || {}), 'X-Admin-Key': ADMIN_KEY };
+  return fetch(url, { ...opciones, headers });
+}
+
+async function entrar() {
+  const resp = await adminFetch('/api/admin/visitas');
+  if (!resp.ok) {
+    $('#gateError').classList.add('visible');
+    localStorage.removeItem('buscadorAdminKey');
+    return false;
+  }
+  $('#gate').style.display = 'none';
+  $('#app').style.display = 'block';
+  await Promise.all([cargarVisitas(), cargarAgentes()]);
+  return true;
+}
+
+$('#btnEntrar').addEventListener('click', async () => {
+  ADMIN_KEY = $('#claveAdmin').value.trim();
+  if (!ADMIN_KEY) return;
+  localStorage.setItem('buscadorAdminKey', ADMIN_KEY);
+  entrar();
+});
+$('#claveAdmin').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btnEntrar').click(); });
+$('#btnSalir').addEventListener('click', () => {
+  localStorage.removeItem('buscadorAdminKey');
+  location.reload();
+});
+
+async function cargarVisitas() {
+  const data = await (await adminFetch('/api/admin/visitas')).json();
+  const hoy = new Date().toISOString().slice(0, 10);
+  const deHoy = data.porDia.find(([d]) => d === hoy)?.[1] || 0;
+  const ultimos7 = data.porDia.slice(0, 7).reduce((s, [, n]) => s + n, 0);
+  $('#statsVisitas').innerHTML = `
+    <div class="stat"><div class="num">${data.total}</div><div class="lbl">Total histórico</div></div>
+    <div class="stat"><div class="num">${ultimos7}</div><div class="lbl">Últimos 7 días</div></div>
+    <div class="stat"><div class="num">${deHoy}</div><div class="lbl">Hoy</div></div>
+  `;
+}
+
+async function cargarAgentes() {
+  const agentes = await (await adminFetch('/api/admin/agentes')).json();
+  if (!agentes.length) {
+    $('#tablaAgentes').innerHTML = '<p class="vacio">Todavía no se registró ningún agente — la app está en modo abierto.</p>';
+    return;
+  }
+  $('#tablaAgentes').innerHTML = `
+    <table>
+      <thead><tr><th>Nombre</th><th>Email</th><th>Origen</th><th>Registrado</th><th>Requerimientos</th><th>Estado</th><th></th></tr></thead>
+      <tbody>
+        ${agentes.map((a) => `
+          <tr>
+            <td>${a.nombre}</td>
+            <td>${a.email || '—'}</td>
+            <td>${a.origen}</td>
+            <td>${new Date(a.creado).toLocaleDateString('es-BO', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+            <td>${a.cantidadRequerimientos}</td>
+            <td><span class="badge ${a.activo ? 'activo' : 'revocado'}">${a.activo ? 'Activo' : 'Revocado'}</span></td>
+            <td><button type="button" class="chico ${a.activo ? 'fantasma' : ''}" onclick="toggleAgente('${a.id}', ${a.activo})">${a.activo ? 'Revocar' : 'Reactivar'}</button></td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+async function toggleAgente(id, estaActivo) {
+  const accion = estaActivo ? 'revocar' : 'activar';
+  await adminFetch(`/api/admin/agentes/${id}/${accion}`, { method: 'POST' });
+  cargarAgentes();
+}
+
+if (ADMIN_KEY) entrar();
+</script>
+</body>
+</html>

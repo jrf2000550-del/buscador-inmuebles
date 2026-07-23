@@ -24,6 +24,7 @@ const PORT = process.env.PORT || 3456;
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'requerimientos.json');
 const AGENTES_FILE = path.join(DATA_DIR, 'agentes.json');
+const VISITAS_FILE = path.join(DATA_DIR, 'visitas.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 const UA =
@@ -156,6 +157,34 @@ function loginAgente({ email, password }) {
   if (!agente || !agente.passwordHash) throw credencialesInvalidas();
   if (!verificarPassword(password || '', agente.passwordSalt, agente.passwordHash)) throw credencialesInvalidas();
   return agente;
+}
+
+// ---------- Panel de administración (José Luis) ----------
+// Separado del sistema de agentes: una key de admin (ADMIN_KEY en .env),
+// distinta de las apiKey de cada agente — José Luis no necesita "ser un
+// agente" para ver quién se registró y cuánto se usa la app.
+
+function esAdmin(req) {
+  const key = req.headers['x-admin-key'];
+  return !!process.env.ADMIN_KEY && key === process.env.ADMIN_KEY;
+}
+
+// Visitas: solo un contador por día (sin IP, sin nada identificable de la
+// persona) — alcanza para ver el pulso de uso sin guardar datos sensibles.
+function leerVisitas() {
+  try {
+    return JSON.parse(fs.readFileSync(VISITAS_FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function registrarVisita() {
+  const hoy = new Date().toISOString().slice(0, 10);
+  const visitas = leerVisitas();
+  visitas[hoy] = (visitas[hoy] || 0) + 1;
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(VISITAS_FILE, JSON.stringify(visitas));
 }
 
 // ---------- Almacenamiento de requerimientos ----------
@@ -1141,6 +1170,46 @@ async function manejarRequest(req, res) {
     }
   }
 
+  // Panel de administración — todo /api/admin/* exige X-Admin-Key (distinta
+  // de las apiKey de agente), sin excepción.
+  if (url.pathname.startsWith('/api/admin/')) {
+    if (!esAdmin(req)) return json(res, 403, { error: 'Clave de administrador inválida.' });
+
+    if (url.pathname === '/api/admin/agentes' && req.method === 'GET') {
+      const agentesConDatos = leerAgentes().map((a) => ({
+        id: a.id,
+        nombre: a.nombre,
+        email: a.email || null,
+        origen: a.email ? 'cuenta propia' : 'clave por CLI',
+        creado: a.creado,
+        activo: a.activo !== false,
+        cantidadRequerimientos: leerRequerimientos(a.id).length,
+      }));
+      agentesConDatos.sort((x, y) => new Date(y.creado) - new Date(x.creado));
+      return json(res, 200, agentesConDatos);
+    }
+
+    const mAgente = url.pathname.match(/^\/api\/admin\/agentes\/([^/]+)\/(activar|revocar)$/);
+    if (mAgente && req.method === 'POST') {
+      const [, id, accion] = mAgente;
+      const lista = leerAgentes();
+      const agente = lista.find((a) => a.id === id);
+      if (!agente) return json(res, 404, { error: 'No existe ese agente.' });
+      agente.activo = accion === 'activar';
+      guardarAgentes(lista);
+      return json(res, 200, { ok: true, activo: agente.activo });
+    }
+
+    if (url.pathname === '/api/admin/visitas' && req.method === 'GET') {
+      const visitas = leerVisitas();
+      const dias = Object.entries(visitas).sort(([a], [b]) => (a < b ? 1 : -1));
+      const total = dias.reduce((s, [, n]) => s + n, 0);
+      return json(res, 200, { total, porDia: dias.slice(0, 30) });
+    }
+
+    return json(res, 404, { error: 'Ruta de administración no encontrada.' });
+  }
+
   // En modo multiagente, toda otra ruta /api/* exige una key válida.
   if (url.pathname.startsWith('/api/') && requiereAuth && !agente) {
     return json(res, 401, { error: 'Falta iniciar sesión o tener una clave de acceso válida.' });
@@ -1232,6 +1301,8 @@ async function manejarRequest(req, res) {
       return json(res, 500, { error: e.message, listados: [] });
     }
   }
+
+  if (url.pathname === '/' && req.method === 'GET') registrarVisita();
 
   const archivo = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
   const ruta = path.join(PUBLIC_DIR, archivo);

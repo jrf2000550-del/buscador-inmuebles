@@ -110,13 +110,25 @@ Abrir http://localhost:3456. Los requerimientos quedan guardados en
 `data/requerimientos.json` (o en un archivo por agente si activaste las keys —
 ver abajo).
 
-## Varios agentes con su propia clave (multiagente)
+## Varios agentes con su propia cuenta (multiagente)
 
-Por defecto la app corre en **modo abierto**: sin clave, un solo espacio de
+Por defecto la app corre en **modo abierto**: sin cuenta, un solo espacio de
 datos — así funciona hoy para uso local de una persona, sin cambiar nada.
 
-Para que la usen varios agentes, cada uno con su propio login y sus propios
-requerimientos (sin ver los del resto), se crean claves con un script:
+**Cada agente puede crearse su propia cuenta solo** (nombre + email +
+contraseña), desde la pantalla de acceso de la app — no hace falta que José
+Luis le cree una clave a mano. Apenas se registra el primer agente, la app
+pasa sola a modo multiagente: todo `/api/*` exige sesión, y cada agente tiene
+su propio archivo `data/requerimientos-<id>.json`, completamente separado del
+resto — nadie ve ni edita los datos de otro agente.
+
+La contraseña nunca se guarda en texto plano (hash scrypt nativo de Node, sin
+dependencias). El login devuelve el mismo tipo de clave de acceso de siempre,
+que el navegador guarda solo (`localStorage`) — no hay que volver a loguearse
+cada vez que se abre la app.
+
+**Alternativa — claves creadas por CLI** (para links de GHL, o agentes que
+preferís dar de alta vos): sigue funcionando igual que antes:
 
 ```
 node scripts/agentes.js crear "Nombre del agente"
@@ -125,15 +137,16 @@ node scripts/agentes.js revocar <id>
 node scripts/agentes.js activar <id>
 ```
 
-Apenas existe **un** agente creado, la app pasa sola a modo multiagente: todo
-`/api/*` exige el header `X-Api-Key`, y cada agente tiene su propio archivo
-`data/requerimientos-<id>.json`.
+El comando `crear` imprime un link con la clave (`https://tu-dominio/?key=sof_...`).
+Al abrirlo, la app guarda la clave sola y ya no hace falta pegarla de nuevo —
+o el agente también puede pegarla a mano desde "¿Tenés una clave de acceso?"
+en la pantalla de acceso.
 
-**Cómo entra cada agente:** el comando `crear` imprime un link con la clave
-(`https://tu-dominio/?key=sof_...`). Al abrirlo, la app guarda la clave en el
-navegador (`localStorage`), la borra de la URL visible y ya no hace falta
-pegarla de nuevo. Si no tiene el link, puede escribir la clave a mano en la
-pantalla de acceso.
+**Sobre "iniciar sesión con Google"**: técnicamente posible, pero necesita que
+José Luis cree una credencial OAuth gratuita en Google Cloud Console (~5
+minutos, trámite suyo — no se puede hacer por él). Queda pendiente si en
+algún momento lo quiere sumar como opción extra sobre el sistema de cuentas
+ya armado.
 
 **Costo de la IA compartido:** si activaste la IA (ver abajo), todos los
 agentes la usan con tu misma cuenta de Anthropic — el gasto es tuyo, no de
@@ -171,9 +184,27 @@ pero el código ya está listo para desplegarse sin cambios (usa
    GitHub y conectarlo (o usar `railway up` desde la terminal, sin GitHub).
 3. En "Variables" del proyecto, cargar `ANTHROPIC_API_KEY` (si vas a usar IA).
 4. Railway te da una URL pública tipo `https://buscador-inmuebles.up.railway.app`.
-5. Ahí sí, correr `node scripts/agentes.js crear "Nombre"` (en el server
-   desplegado, o localmente contra el mismo `data/agentes.json` si lo subís) y
-   repartir los links `https://tu-url/?key=...` a cada agente.
+5. Los agentes se registran solos desde esa URL (ver "Varios agentes con su
+   propia cuenta" más abajo) — no hace falta correr nada a mano.
+
+**Importante — Volumen persistente**: Railway borra el filesystem del
+contenedor en cada redeploy si no hay un volumen conectado — sin esto, cada
+vez que se sube código nuevo se perderían todas las cuentas y requerimientos
+guardados. Ya está configurado (`railway volume add --mount-path /app/data`,
+un volumen de 500MB montado en `/app/data`) — verificado que los datos
+sobreviven a un redeploy. Si alguna vez se recrea el proyecto desde cero en
+Railway, hay que volver a crear este volumen ANTES de que agentes reales se
+registren.
+
+**Deploy real (ya en uso, 2026-07-23)**: la app publicada hoy en
+`https://buscador-inmuebles-production.up.railway.app` se actualiza con
+`railway up --ci -m "mensaje"` desde esta carpeta (requiere `railway login` y
+`railway link` una vez). La detección automática de pushes a GitHub
+("Check for updates") no está funcionando bien en este proyecto — devuelve
+"GitHub Repo not found" de forma intermitente aunque el permiso ya está
+concedido — así que por ahora **el deploy es manual con `railway up`**, no
+automático al hacer `git push`. Si en el futuro se quiere arreglar eso,
+revisar `railway service source connect --repo owner/repo --branch main`.
 
 **Integrarlo en GHL — Custom Menu Link:**
 1. En GHL → Configuración de la agencia/subcuenta → **Custom Menu Links**.
