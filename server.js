@@ -480,20 +480,28 @@ async function fetchJsonPost(url, params) {
   return res.json();
 }
 
-function normalizarBienInmuebles(r, tc) {
+function normalizarBienInmuebles(r, tc, tipo) {
   const enBs = String(r.moneda_cata) === '1';
   const crudo = Number(String(r.precio_cata || '').replace(/[^\d.]/g, ''));
   let precio = crudo ? Math.round(enBs ? crudo / tc : crudo) : null;
   const dormitorios = Number(r.habitacion_cata);
   const banos = Number(r.banio_cata);
+  // BienInmuebles solo trae una medida (supterreno_cata) — igual que
+  // Mobiliario App, en terrenos es superficie de lote y en el resto (casa,
+  // depto, oficina, local) es área construida. Antes se guardaba siempre
+  // como m2Terreno sin importar el tipo, lo que rompía los filtros de m²
+  // construidos para oficinas/locales/deptos de esta fuente (encontrado
+  // 2026-07-24 investigando por qué una búsqueda de oficina con m² mínimo
+  // casi no traía resultados).
+  const m2 = Number(r.supterreno_cata) || null;
   return {
     fuente: 'BienInmuebles',
     titulo: r.nomb_cata || '(sin título)',
     precio,
     dormitorios: dormitorios > 0 ? dormitorios : null,
     banos: banos > 0 ? banos : null,
-    m2Terreno: Number(r.supterreno_cata) || null,
-    m2Construccion: null,
+    m2Terreno: tipo === 'terreno' ? m2 : null,
+    m2Construccion: tipo !== 'terreno' ? m2 : null,
     zona: [r.nomb_barri, r.nomb_grup].filter(Boolean).join(', '),
     direccion: r.direccion_cata || '',
     lat: Number(r.latitud_cata) || null,
@@ -540,7 +548,7 @@ async function fetchBienInmuebles(req, tc) {
       if (p === 1) throw new Error((d && d.message) || 'Respuesta inesperada de BienInmuebles');
       break; // páginas siguientes: si fallan, nos quedamos con lo ya traído
     }
-    items.push(...d.map((r) => normalizarBienInmuebles(r, tc)));
+    items.push(...d.map((r) => normalizarBienInmuebles(r, tc, req.tipo)));
     if (d.length < BIEN_FILAS) break; // página incompleta = era la última
   }
   return items;
@@ -605,7 +613,19 @@ function categoriaDesdeBreadcrumb(breadcrumbJson) {
 function normalizarMobiliario(entidad, breadcrumbJson, url) {
   const { operacion, tipo, categoriaTexto } = categoriaDesdeBreadcrumb(breadcrumbJson);
   if (!tipo) return null; // categoría no reconocida (ej. otro tipo de propiedad) — se descarta
-  const m2 = entidad.floorSize?.value ? Math.round(Number(entidad.floorSize.value)) : null;
+  // Oficinas y locales (@type "Place") no traen floorSize en el schema.org de
+  // Mobiliario App — solo casa/depto/terreno (House/Apartment) lo declaran.
+  // El m² sí está en texto plano dentro de la descripción autogenerada
+  // ("Oficina en Santa Cruz de la Sierra, 188 m², $1.790...") — se rescata de
+  // ahí como respaldo. Encontrado 2026-07-24: sin esto, TODAS las oficinas y
+  // locales de esta fuente quedaban con m2Construccion null y desaparecían
+  // de cualquier búsqueda con filtro de m² mínimo, aunque el dato exista.
+  const m2Descripcion = entidad.description ? entidad.description.match(/,\s*([\d.,]+)\s*m²/i) : null;
+  const m2 = entidad.floorSize?.value
+    ? Math.round(Number(entidad.floorSize.value))
+    : m2Descripcion
+      ? Math.round(Number(m2Descripcion[1].replace(/\./g, '').replace(',', '.')))
+      : null;
   // El schema.org de cada aviso declara su propia moneda (offers.priceCurrency)
   // — la mayoría son USD, pero varios están en Bs (bug real encontrado
   // 2026-07-23: una casa a "Bs 10.440.000" se estaba leyendo como si fueran
@@ -693,13 +713,19 @@ async function sincronizarMobiliario() {
   try {
     const sitemap = await obtenerListingsSitemap();
     const porId = { ...cache.listados };
-    // Además de lo nuevo/modificado, re-procesa lo que quedó en el formato
-    // viejo (antes de guardar precioCrudo/monedaCrudo por separado, bug de
-    // conversión de moneda corregido 2026-07-23) — así una sola sincronización
-    // arregla sola los datos ya cacheados, sin tener que borrar nada a mano.
-    const pendientes = sitemap.filter(
-      (s) => !porId[s.id] || porId[s.id].lastmod !== s.lastmod || (porId[s.id].item && porId[s.id].item.precioCrudo === undefined)
-    );
+    // Además de lo nuevo/modificado, re-procesa lo que quedó en formato
+    // viejo o incompleto — así una sola sincronización arregla sola los
+    // datos ya cacheados, sin tener que borrar nada a mano:
+    //  - precioCrudo/monedaCrudo por separado (bug de moneda, 2026-07-23)
+    //  - m² de oficinas/locales rescatado de la descripción (2026-07-24)
+    const pendientes = sitemap.filter((s) => {
+      const cacheado = porId[s.id];
+      if (!cacheado || cacheado.lastmod !== s.lastmod) return true;
+      if (!cacheado.item) return false; // descartado a propósito (otra ciudad/categoría) — no reintentar
+      if (cacheado.item.precioCrudo === undefined) return true;
+      if (['oficina', 'local'].includes(cacheado.item.tipo) && cacheado.item.m2Construccion == null) return true;
+      return false;
+    });
 
     let fallosSeguidos = 0;
     for (let i = 0; i < pendientes.length; i += MOBILIARIO_LOTE) {
