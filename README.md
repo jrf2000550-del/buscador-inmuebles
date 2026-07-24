@@ -319,8 +319,17 @@ responden todo en una sola consulta):
 - El progreso se guarda cada tanda — si el servidor se reinicia a mitad de
   una sincronización (pasa seguido en desarrollo), retoma solo lo que falte,
   no arranca de cero.
-- Re-sincroniza sola cada 20 horas (solo trae lo nuevo/modificado, comparando
-  fechas del sitemap — mucho más rápido que la primera vez).
+- Re-sincroniza sola cada 6 horas — no solo al arrancar el servidor, hay un
+  chequeo cada hora (`setInterval`) mientras el proceso esté vivo. Antes solo
+  se revisaba una vez al arrancar; si el servidor quedaba prendido varios
+  días seguidos (lo normal en producción) nunca se volvía a chequear y los
+  datos se congelaban — bug corregido 2026-07-24. Cada re-sincronización solo
+  trae lo nuevo/modificado (comparando fechas del sitemap), mucho más rápido
+  que la primera vez completa.
+- **Limpia sola lo que ya no está disponible**: si una propiedad se vende o
+  se da de baja en mobiliario.app, desaparece de su sitemap — en la siguiente
+  sincronización se saca también de nuestra caché (antes se quedaba para
+  siempre, otro bug corregido el mismo día).
 - Si detecta muchos fallos seguidos (posible bloqueo, como pasó con
   BienInmuebles en julio), para sola en vez de insistir a ciegas.
 - Solo se guardan propiedades de Santa Cruz (el portal cubre toda Bolivia,
