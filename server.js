@@ -565,7 +565,14 @@ const MOBILIARIO_CACHE_FILE = path.join(DATA_DIR, 'cache-mobiliario.json');
 const MOBILIARIO_LOTE = 4; // pedidos en paralelo por tanda
 const MOBILIARIO_PAUSA_MS = 400; // pausa entre tandas — ritmo de crawler respetuoso, no ráfaga
 const MOBILIARIO_MAX_FALLOS_SEGUIDOS = 8; // si falla muchas veces seguidas, para (probable bloqueo)
-const MOBILIARIO_RESYNC_HORAS = 20; // a partir de esta antigüedad, se reintenta sincronizar
+// Antes en 20h y solo se chequeaba al arrancar el servidor — si quedaba
+// prendido varios días, nunca se volvía a revisar (bug corregido 2026-07-24,
+// ver chequearResyncMobiliario). Bajado a 6h: después de la primera
+// sincronización completa, las siguientes son "baratas" (solo se re-piden
+// los avisos nuevos/modificados, comparando fechas del sitemap — la mayoría
+// de los ~7.900 no cambiaron), así que revisar 4 veces al día es razonable
+// y mantiene lo nuevo de otros portales visible el mismo día que se publica.
+const MOBILIARIO_RESYNC_HORAS = 6;
 
 function leerCacheMobiliario() {
   try {
@@ -723,6 +730,18 @@ async function sincronizarMobiliario() {
       }
       await new Promise((r) => setTimeout(r, MOBILIARIO_PAUSA_MS));
     }
+
+    // Lo que estaba cacheado pero ya NO aparece en el sitemap actual se sacó
+    // de mobiliario.app (vendido, dado de baja) — sin esto, propiedades ya
+    // no disponibles se quedarían mostrándose para siempre. El sitemap que
+    // se pidió arriba es la lista completa vigente, así que cualquier id que
+    // no esté ahí ya no existe del lado de ellos.
+    const idsVigentes = new Set(sitemap.map((s) => s.id));
+    for (const id of Object.keys(porId)) {
+      if (!idsVigentes.has(id)) delete porId[id];
+    }
+    cache.listados = porId;
+
     cache.sincronizadoEn = new Date().toISOString();
   } catch (e) {
     cache.ultimoError = 'No se pudo sincronizar: ' + e.message;
@@ -1455,20 +1474,33 @@ process.on('unhandledRejection', (err) => {
   console.error('Promesa rechazada sin atrapar (el servidor sigue funcionando):', err);
 });
 
-server.listen(PORT, () => {
-  console.log(`Buscador de inmuebles corriendo en http://localhost:${PORT}`);
-
-  // Sincronizar Mobiliario App en segundo plano si nunca se hizo o si ya
-  // pasó bastante tiempo — no bloquea el arranque del servidor (fire and
-  // forget). Si el servidor se reinicia a mitad de una sincronización
-  // (pasa seguido en desarrollo), retoma solo lo que falte gracias al
-  // progreso ya guardado en cache-mobiliario.json.
-  const cacheInicial = leerCacheMobiliario();
-  const horasDesdeUltimaSync = cacheInicial.sincronizadoEn
-    ? (Date.now() - new Date(cacheInicial.sincronizadoEn).getTime()) / 3600000
+// Revisa si ya pasaron MOBILIARIO_RESYNC_HORAS desde la última sincronización
+// completa y, si es así, dispara una nueva (no bloquea nada — fire and
+// forget). C21/RE/MAX/BienInmuebles no necesitan esto porque se leen en vivo
+// en cada búsqueda; Mobiliario App es la única que depende de esta caché.
+function chequearResyncMobiliario() {
+  const cache = leerCacheMobiliario();
+  const horasDesdeUltimaSync = cache.sincronizadoEn
+    ? (Date.now() - new Date(cache.sincronizadoEn).getTime()) / 3600000
     : Infinity;
-  if (!cacheInicial.enProgreso && horasDesdeUltimaSync >= MOBILIARIO_RESYNC_HORAS) {
+  if (!cache.enProgreso && horasDesdeUltimaSync >= MOBILIARIO_RESYNC_HORAS) {
     console.log('Sincronizando Mobiliario App en segundo plano…');
     sincronizarMobiliario().catch((e) => console.error('Error sincronizando Mobiliario App:', e));
   }
+}
+
+server.listen(PORT, () => {
+  console.log(`Buscador de inmuebles corriendo en http://localhost:${PORT}`);
+
+  // Si el servidor se reinicia a mitad de una sincronización (pasa seguido
+  // en desarrollo), retoma solo lo que falte gracias al progreso ya
+  // guardado en cache-mobiliario.json.
+  chequearResyncMobiliario();
+
+  // Antes esto SOLO se chequeaba acá, al arrancar — si el servidor se queda
+  // prendido varios días seguidos (lo deseable en producción), nunca se
+  // volvía a revisar y Mobiliario App se quedaba desactualizada para
+  // siempre después de las primeras horas. Ahora se revisa cada hora
+  // mientras el proceso esté vivo, sin importar cuánto tiempo lleve arriba.
+  setInterval(chequearResyncMobiliario, 60 * 60 * 1000);
 });
