@@ -309,6 +309,18 @@ function urlC21(req, pagina) {
   return `https://c21.com.bo/v/resultados/${tipo}${op}/en-pais_bolivia/en-estado_santa-cruz${pag}?json=true`;
 }
 
+// C21 formatea m2TFormat/m2CFormat con "." como separador de miles (ej.
+// "3.723" = 3.723 m², no 3,723) — mismo criterio que totalHits (ver
+// fetchC21 más abajo). Number(r.m2TFormat) directo rompía cualquier
+// terreno/construcción ≥1.000 m² (ej. "1.432" se leía como 1,432 m² en vez
+// de 1432 m², de ahí avisos con precio/m² absurdo que en realidad eran
+// avisos normales mal parseados). Confirmado contra la API en vivo el
+// 2026-07-26 para ambos campos, no solo por simetría de nombre.
+function parseM2Format(v) {
+  const n = Number(String(v || '').replace(/\D/g, ''));
+  return n > 0 ? n : null;
+}
+
 function normalizarC21(r, operacion) {
   // enInternet=false = el propio C21 lo sacó de publicación (vendido, bajado,
   // etc.) — no debe aparecer en los resultados. Verificado 2026-07-19 con 400
@@ -330,8 +342,8 @@ function normalizarC21(r, operacion) {
     precio,
     dormitorios: r.recamaras > 0 ? r.recamaras : null,
     banos: r.banos > 0 ? r.banos : null,
-    m2Terreno: Number(r.m2TFormat) || null,
-    m2Construccion: Number(r.m2CFormat) || null,
+    m2Terreno: parseM2Format(r.m2TFormat),
+    m2Construccion: parseM2Format(r.m2CFormat),
     zona: [r.coloniaWeb || r.colonia, r.municipio, r.estado].filter(Boolean).join(', '),
     direccion: '',
     lat: Number(r.lat) || null,
