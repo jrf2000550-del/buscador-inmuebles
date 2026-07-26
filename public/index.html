@@ -247,6 +247,7 @@
   .acm-stat .lbl { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .acm-narrativa { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px 16px; font-size: 14px; line-height: 1.6; white-space: pre-line; }
   .acm-cargando { color: var(--accent); font-size: 13px; }
+  .acm-disclaimer { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-soft); color: var(--muted); font-size: 11.5px; line-height: 1.5; }
   .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--panel-2); color: var(--text); }
   .leaflet-popup-content { font-size: 13px; line-height: 1.5; }
   .leaflet-popup-content a { color: var(--info); }
@@ -808,6 +809,7 @@ function renderAcm(stats, ia) {
         : IA_ACTIVA
           ? '<p class="acm-cargando">Generando análisis con IA…</p>'
           : '<p class="sub" style="margin:0">Activá la IA para un análisis con recomendación redactada — por ahora se muestran solo las estadísticas.</p>'}
+      <p class="acm-disclaimer">Este análisis refleja avisos activos en portales rastreados (Century 21, RE/MAX, BienInmuebles, Mobiliario App) a la fecha de hoy. No captura acuerdos privados, referidos entre agentes, ni avisos con errores de carga o categorización del propio anunciante.</p>
     </div>
   `;
 }

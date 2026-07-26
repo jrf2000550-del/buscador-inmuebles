@@ -1481,6 +1481,11 @@ function calcularEstadisticasMercado(items, tipo, sujeto) {
   const hayNivelA = comparablesDetalle.some((c) => c.nivel === 'A');
   score += hayNivelA ? 10 : -10;
   score = Math.max(0, Math.min(100, score));
+  // Sin ningún comparable Nivel A (cierre real confirmado) el score nunca
+  // puede llegar a "Alta", sin importar qué tan bien se vean los B — son
+  // avisos publicados, no cierres. Tope explícito (no solo el -10 de arriba)
+  // porque el resto del score puede seguir dando 90+ igual.
+  if (!hayNivelA) score = Math.min(score, 79);
   const confiabilidadGlobal = {
     score,
     etiqueta: score >= 80 ? 'Alta' : score >= 50 ? 'Media' : 'Baja — tratar como referencia, no conclusión',
@@ -1538,14 +1543,19 @@ const PROMPT_ACM =
   'reclasificar nada (no cambies niveles A/B/C, no inventes otro precio/m² de referencia, usá siempre ' +
   'precioM2Ponderado y confiabilidadGlobal tal como vienen). Devolvé SOLO este JSON, sin texto extra ni ' +
   'bloques de código: {"rangoSugerido":{"min":number,"max":number},"comentarioComparables":string,' +
-  '"recomendacionPractica":string,"riesgoSiConfiabilidadBaja":string}. Reglas: rangoSugerido en USD, ' +
-  'centrado en precioM2Ponderado × el m² del sujeto, con un ancho que dependa de la dispersión (más ancho ' +
-  'si confiabilidadGlobal.score es bajo); comentarioComparables menciona 2-3 comparables específicos de ' +
-  'comparablesDetalle (por link o descripción breve) y por qué pesan lo que pesan (nivel, outlier, ' +
-  'similitud de tamaño); recomendacionPractica es una frase práctica (precio de publicación sugerido o ' +
-  'qué confirmar); riesgoSiConfiabilidadBaja: si confiabilidadGlobal.etiqueta es "Alta", dejá "" — si no, ' +
-  'una frase explícita de qué tan poco confiable es el número y por qué (pocos comparables, sin cierres ' +
-  'reales, dispersión alta, etc., según corresponda). Sin emojis, español, tono directo.';
+  '"recomendacionPractica":string,"riesgoSiConfiabilidadBaja":string}. Reglas: LENGUAJE DE PRECIOS — nunca ' +
+  'redactes un comparable Nivel B como si fuera un cierre/venta confirmada ("se vendió a", "se cerró en", ' +
+  '"se vendieron en"); son avisos publicados, no transacciones, así que para B usá siempre "se está ' +
+  'publicando/pidiendo actualmente en" o equivalente. Reservá el lenguaje de cierre ("se vendió a", "cerró ' +
+  'en") EXCLUSIVAMENTE para comparables marcados nivel:"A" en comparablesDetalle — esto no es opcional ni a ' +
+  'tu criterio, es la regla en cada corrida. rangoSugerido en USD, centrado en precioM2Ponderado × el m² ' +
+  'del sujeto, con un ancho que dependa de la dispersión (más ancho si confiabilidadGlobal.score es bajo); ' +
+  'comentarioComparables menciona 2-3 comparables específicos de comparablesDetalle (por link o descripción ' +
+  'breve) y por qué pesan lo que pesan (nivel, outlier, similitud de tamaño), respetando el lenguaje de ' +
+  'precios de arriba; recomendacionPractica es una frase práctica (precio de publicación sugerido o qué ' +
+  'confirmar); riesgoSiConfiabilidadBaja: si confiabilidadGlobal.etiqueta es "Alta", dejá "" — si no, una ' +
+  'frase explícita de qué tan poco confiable es el número y por qué (pocos comparables, sin cierres reales, ' +
+  'dispersión alta, etc., según corresponda). Sin emojis, español, tono directo.';
 
 const SCHEMA_ACM = {
   type: 'object',
