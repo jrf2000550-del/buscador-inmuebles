@@ -1310,16 +1310,31 @@ const TOPE_PESO_FRACCION = 0.15; // ningún comparable puede aportar más del 15
 // Century 21 con m2Construccion=1.432 (typo, falta un dígito) que disparaba
 // un precio/m² de 698.324 — ni el chequeo de outlier de más abajo alcanza a
 // neutralizar un dato así de roto, tiene que quedar afuera antes.
+//
+// Dos chequeos independientes:
+// 1) Cordura de TAMAÑO — aplica a todos los tipos.
+// 2) Cordura de PRECIO/M² con techo absoluto — SOLO para casa/depto/oficina/
+//    local. En terreno el rango legítimo de USD/m² abarca 3 órdenes de
+//    magnitud (lote urbano premium vs. extensión rural): un techo absoluto
+//    no puede distinguir "caro real" de "typo" ahí, así que el único filtro
+//    de precio para terreno es la segmentación por cuartiles + outlier de
+//    más abajo, que compara cada lote contra otros de tamaño similar.
 const M2_CONSTRUCCION_MIN = 15;
+const M2_TERRENO_MIN = 10;
 const PRECIO_M2_MIN = 50;
 const PRECIO_M2_MAX = 10000;
 
 function esComparableSano(item, campoM2) {
   const m2 = item[campoM2];
   if (!(m2 > 0)) return false;
-  if (campoM2 === 'm2Construccion' && m2 < M2_CONSTRUCCION_MIN) return false;
-  const precioM2 = item.precio / m2;
-  return precioM2 >= PRECIO_M2_MIN && precioM2 <= PRECIO_M2_MAX;
+  if (campoM2 === 'm2Construccion') {
+    if (m2 < M2_CONSTRUCCION_MIN) return false;
+    const precioM2 = item.precio / m2;
+    if (precioM2 < PRECIO_M2_MIN || precioM2 > PRECIO_M2_MAX) return false;
+  } else if (campoM2 === 'm2Terreno') {
+    if (m2 < M2_TERRENO_MIN) return false;
+  }
+  return true;
 }
 
 function factorRecencia(fecha) {
