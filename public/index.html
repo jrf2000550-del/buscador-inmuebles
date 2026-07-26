@@ -221,6 +221,19 @@
   #mapaWrap { margin-bottom: 20px; margin-top: 10px; }
   #mapa { height: 420px; border-radius: var(--radius); border: 1px solid var(--border-soft); background: var(--panel); box-shadow: var(--shadow); }
 
+  .badge-nivel { display: inline-block; font-size: 11px; font-weight: 800; padding: 2px 9px; border-radius: 999px; margin-right: 4px; }
+  .badge-a { background: var(--ok-soft); color: #86efac; }
+  .badge-b { background: var(--warn-soft); color: #fde6a8; }
+  .badge-c { background: var(--danger-soft); color: #ffb4b4; }
+
+  .manuales-wrap { margin: 10px 0 20px; padding: 14px 16px; background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: var(--radius); }
+  .manuales-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .manuales-form select, .manuales-form input { flex: 1 1 120px; }
+  .manual-item { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 6px 0; border-top: 1px solid var(--border-soft); }
+  .manual-item:first-child { border-top: none; }
+  .quitar-manual { background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 15px; padding: 0 4px; box-shadow: none; }
+  .quitar-manual:hover { color: var(--danger); filter: none; transform: none; box-shadow: none; }
+
   #acmWrap { margin: 10px 0 20px; }
   .acm-reporte {
     background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--border-soft);
@@ -517,6 +530,20 @@
       <p class="sub" id="mapaInfo"></p>
       <div id="mapa"></div>
     </div>
+    <div id="manualesWrap" class="manuales-wrap" style="display:none">
+      <p class="sub" style="margin:0 0 8px">Agregar comparable manual para el ACM (cierre real u otra referencia — no aparece como resultado de búsqueda):</p>
+      <div class="manuales-form">
+        <select id="manualNivel">
+          <option value="A">Nivel A — cierre real</option>
+          <option value="C">Nivel C — referencia informal</option>
+        </select>
+        <input type="number" id="manualPrecio" placeholder="Precio U$S">
+        <input type="number" id="manualM2" placeholder="m²">
+        <input type="text" id="manualNota" placeholder="Nota (ej. dirección, cliente)">
+        <button type="button" id="btnAgregarManual">Agregar</button>
+      </div>
+      <div id="listaManuales"></div>
+    </div>
     <div id="acmWrap" style="display:none"></div>
     <div id="zona-resultados"><p class="vacio">Sin búsqueda todavía.</p></div>
   </section>
@@ -752,26 +779,94 @@ function formatoUsd(n) {
   return n == null ? '—' : 'U$S ' + Math.round(n).toLocaleString('es-BO');
 }
 
-function renderAcm(stats, narrativaIA) {
+function renderAcm(stats, ia) {
   const campo = stats.campoM2Usado === 'm2Terreno' ? 'm² de terreno' : 'm² construido';
+  const conf = stats.confiabilidadGlobal || { score: null, etiqueta: '—' };
+  const claseConf = conf.etiqueta === 'Alta' ? 'badge-a' : conf.etiqueta === 'Media' ? 'badge-b' : 'badge-c';
+  const detalle = stats.comparablesDetalle || [];
+  const conteo = { A: 0, B: 0, C: 0 };
+  detalle.forEach((c) => { conteo[c.nivel] = (conteo[c.nivel] || 0) + 1; });
+
   $('#acmWrap').innerHTML = `
     <div class="acm-reporte">
       <h3>Análisis Comparativo de Mercado</h3>
       <p class="acm-sub">Basado en ${stats.cantidadComparables} propiedad(es) comparable(s) encontradas ahora mismo.</p>
       <div class="acm-stats">
         <div class="acm-stat"><div class="num">${formatoUsd(stats.precioMediana)}</div><div class="lbl">Precio mediana</div></div>
-        <div class="acm-stat"><div class="num">${formatoUsd(stats.precioPromedio)}</div><div class="lbl">Precio promedio</div></div>
+        <div class="acm-stat"><div class="num">${formatoUsd(stats.precioM2Ponderado)}</div><div class="lbl">Precio/${campo} ponderado</div></div>
         <div class="acm-stat"><div class="num">${formatoUsd(stats.precioMin)} – ${formatoUsd(stats.precioMax)}</div><div class="lbl">Rango de precios</div></div>
-        ${stats.precioM2Mediana ? `<div class="acm-stat"><div class="num">${formatoUsd(stats.precioM2Mediana)}</div><div class="lbl">Mediana por ${campo}</div></div>` : ''}
+        <div class="acm-stat"><div class="num"><span class="badge-nivel ${claseConf}">${conf.etiqueta}</span></div><div class="lbl">Confiabilidad (${conf.score ?? '—'}/100)</div></div>
       </div>
-      ${narrativaIA
-        ? `<div class="acm-narrativa">${narrativaIA.replace(/\n/g, '<br>')}</div>`
+      <p class="sub" style="margin:0 0 12px">Comparables por nivel: <span class="badge-nivel badge-a">A ${conteo.A || 0}</span><span class="badge-nivel badge-b">B ${conteo.B || 0}</span><span class="badge-nivel badge-c">C ${conteo.C || 0}</span></p>
+      ${ia
+        ? `
+          ${ia.rangoSugerido ? `<p class="sub" style="margin:0 0 8px">Rango sugerido: ${formatoUsd(ia.rangoSugerido.min)} – ${formatoUsd(ia.rangoSugerido.max)}</p>` : ''}
+          <div class="acm-narrativa">${(ia.comentarioComparables || '').replace(/\n/g, '<br>')}</div>
+          ${ia.recomendacionPractica ? `<p class="sub" style="margin-top:8px">${ia.recomendacionPractica}</p>` : ''}
+          ${ia.riesgoSiConfiabilidadBaja ? `<p class="aviso" style="margin-top:8px">${ia.riesgoSiConfiabilidadBaja}</p>` : ''}
+        `
         : IA_ACTIVA
           ? '<p class="acm-cargando">Generando análisis con IA…</p>'
           : '<p class="sub" style="margin:0">Activá la IA para un análisis con recomendación redactada — por ahora se muestran solo las estadísticas.</p>'}
     </div>
   `;
 }
+
+// ---------- Comparables manuales (cierres reales u otra referencia) ----------
+// Persisten en localStorage por combinación de filtros de búsqueda, para no
+// perderlos si el agente recarga o vuelve más tarde a ese mismo requerimiento.
+
+function claveManuales(params) {
+  return 'acmManuales:' + new URLSearchParams(params).toString();
+}
+
+function leerManuales() {
+  if (!ultimosParamsBusqueda) return [];
+  try {
+    return JSON.parse(localStorage.getItem(claveManuales(ultimosParamsBusqueda)) || '[]');
+  } catch {
+    return [];
+  }
+}
+
+function guardarManuales(lista) {
+  if (!ultimosParamsBusqueda) return;
+  localStorage.setItem(claveManuales(ultimosParamsBusqueda), JSON.stringify(lista));
+}
+
+function renderListaManuales() {
+  const lista = leerManuales();
+  $('#listaManuales').innerHTML = lista.length
+    ? lista.map((m, idx) => `
+      <div class="manual-item">
+        <span class="badge-nivel badge-${m.nivel.toLowerCase()}">${m.nivel}</span>
+        ${formatoUsd(Number(m.precio))} · ${m.m2} m²${m.nota ? ' — ' + m.nota : ''}
+        <button type="button" class="quitar-manual" onclick="quitarManual(${idx})" title="Quitar">×</button>
+      </div>`).join('')
+    : '<p class="sub" style="margin:6px 0 0">Sin comparables manuales cargados.</p>';
+}
+
+function quitarManual(idx) {
+  const lista = leerManuales();
+  lista.splice(idx, 1);
+  guardarManuales(lista);
+  renderListaManuales();
+}
+
+$('#btnAgregarManual').addEventListener('click', () => {
+  const nivel = $('#manualNivel').value;
+  const precio = $('#manualPrecio').value;
+  const m2 = $('#manualM2').value;
+  const nota = $('#manualNota').value.trim();
+  if (!precio || !m2) return; // m² es obligatorio: sin él el comparable no entra a ningún cálculo
+  const lista = leerManuales();
+  lista.push({ nivel, precio, m2, nota, id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6) });
+  guardarManuales(lista);
+  renderListaManuales();
+  $('#manualPrecio').value = '';
+  $('#manualM2').value = '';
+  $('#manualNota').value = '';
+});
 
 $('#btnACM').addEventListener('click', async () => {
   if (!ultimosAnalisisMercado || !ultimosParamsBusqueda) return;
@@ -785,6 +880,12 @@ $('#btnACM').addEventListener('click', async () => {
 
   const params = new URLSearchParams(ultimosParamsBusqueda);
   params.set('acm', '1');
+  const manuales = leerManuales();
+  if (manuales.length) {
+    params.set('comparablesManuales', JSON.stringify(manuales.map((m) => (
+      { nivel: m.nivel, precio: m.precio, m2: m.m2, nota: m.nota, link: 'manual-' + m.id }
+    ))));
+  }
   try {
     const data = await (await apiFetch('/api/buscar?' + params)).json();
     renderAcm(data.analisisMercado || ultimosAnalisisMercado, data.analisisMercadoIA);
@@ -856,6 +957,7 @@ async function buscar(r) {
   $('#btnACM').style.display = 'none';
   $('#acmWrap').style.display = 'none';
   $('#acmWrap').innerHTML = '';
+  $('#manualesWrap').style.display = 'none';
 
   const params = new URLSearchParams();
   for (const k of ['operacion','tipo','zona','precioMin','precioMax','moneda','tc','dormitorios','banos','m2TerrenoMin','m2TerrenoMax','m2ConstruccionMin','m2ConstruccionMax','palabras','excluir','filtroEstricto','antiguedadMaxDias']) {
@@ -918,7 +1020,10 @@ async function buscar(r) {
   const conUbicacion = data.listados.filter((i) => i.lat && i.lon).length;
   $('#btnMapa').style.display = conUbicacion ? 'inline-flex' : 'none';
   ultimosAnalisisMercado = data.analisisMercado || null;
-  $('#btnACM').style.display = ultimosAnalisisMercado && ultimosAnalisisMercado.cantidadComparables >= 3 ? 'inline-flex' : 'none';
+  const hayAcm = ultimosAnalisisMercado && ultimosAnalisisMercado.cantidadComparables >= 3;
+  $('#btnACM').style.display = hayAcm ? 'inline-flex' : 'none';
+  $('#manualesWrap').style.display = hayAcm ? 'block' : 'none';
+  if (hayAcm) renderListaManuales();
 
   $('#zona-resultados').innerHTML = nota + '<div class="grid">' + data.listados.map((i) => `
     <div class="card">
