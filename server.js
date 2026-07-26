@@ -309,16 +309,32 @@ function urlC21(req, pagina) {
   return `https://c21.com.bo/v/resultados/${tipo}${op}/en-pais_bolivia/en-estado_santa-cruz${pag}?json=true`;
 }
 
-// C21 formatea m2TFormat/m2CFormat con "." como separador de miles (ej.
-// "3.723" = 3.723 m², no 3,723) — mismo criterio que totalHits (ver
-// fetchC21 más abajo). Number(r.m2TFormat) directo rompía cualquier
-// terreno/construcción ≥1.000 m² (ej. "1.432" se leía como 1,432 m² en vez
-// de 1432 m², de ahí avisos con precio/m² absurdo que en realidad eran
-// avisos normales mal parseados). Confirmado contra la API en vivo el
-// 2026-07-26 para ambos campos, no solo por simetría de nombre.
+// Respaldo (ya no es la fuente principal — ver parseM2ConRespaldo más abajo)
+// para cuando C21 no traiga m2TSort/m2CSort numérico. Parsea "." como
+// separador de miles (ej. "3.723" = 3.723 m², no 3,723).
 function parseM2Format(v) {
   const n = Number(String(v || '').replace(/\D/g, ''));
   return n > 0 ? n : null;
+}
+
+// m2TSort/m2CSort son la fuente correcta: C21 ya los entrega convertidos a
+// m², resolviendo dos problemas de una vez que m2TFormat/m2CFormat (parseado
+// a mano) no puede — separador de miles Y unidad de medida real (algunos
+// terrenos grandes vienen en hectáreas, no m²; ej. un terreno de 29,4 ha
+// tiene m2TFormat="29" pero m2TSort=294000, el valor correcto en m²).
+// Verificado contra 1.571 avisos reales de las 5 categorías (terreno, casa,
+// depto, oficina, local) el 2026-07-26: m2TSort/m2CSort siempre presentes y
+// numéricos, ningún caso ausente. Por las dudas, si algún día faltan, hay
+// un respaldo explícito (parseM2Format) y se registra en vez de caer a null
+// en silencio.
+function parseM2ConRespaldo(sort, formatStr, idAviso) {
+  if (typeof sort === 'number' && Number.isFinite(sort) && sort > 0) return sort;
+  const respaldo = parseM2Format(formatStr);
+  console.error(
+    `C21: aviso ${idAviso || '?'} sin m2Sort numérico válido (${JSON.stringify(sort)}) — ` +
+    `usando respaldo parseM2Format(${JSON.stringify(formatStr)}) = ${respaldo}`
+  );
+  return respaldo;
 }
 
 function normalizarC21(r, operacion) {
@@ -342,8 +358,8 @@ function normalizarC21(r, operacion) {
     precio,
     dormitorios: r.recamaras > 0 ? r.recamaras : null,
     banos: r.banos > 0 ? r.banos : null,
-    m2Terreno: parseM2Format(r.m2TFormat),
-    m2Construccion: parseM2Format(r.m2CFormat),
+    m2Terreno: parseM2ConRespaldo(r.m2TSort, r.m2TFormat, r.id),
+    m2Construccion: parseM2ConRespaldo(r.m2CSort, r.m2CFormat, r.id),
     zona: [r.coloniaWeb || r.colonia, r.municipio, r.estado].filter(Boolean).join(', '),
     direccion: '',
     lat: Number(r.lat) || null,
