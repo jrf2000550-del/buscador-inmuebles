@@ -206,6 +206,95 @@ function guardarRequerimientos(lista, agenteId) {
   fs.writeFileSync(archivoRequerimientos(agenteId), JSON.stringify(lista, null, 2));
 }
 
+// ---------- Almacenamiento de alertas de match ----------
+// Se generan cuando una propiedad nueva (cargada a mano, sincronizada desde
+// GHL indirectamente vía requerimiento, o detectada en la sincronización de
+// Mobiliario App) matchea un requerimiento guardado del agente.
+
+function archivoAlertas(agenteId) {
+  return path.join(DATA_DIR, `alertas-${agenteId || 'sin-agente'}.json`);
+}
+
+function leerAlertas(agenteId) {
+  try {
+    return JSON.parse(fs.readFileSync(archivoAlertas(agenteId), 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
+function guardarAlerta(agenteId, datos) {
+  const lista = leerAlertas(agenteId);
+  const alerta = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    creado: new Date().toISOString(),
+    leida: false,
+    ...datos,
+  };
+  lista.unshift(alerta);
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(archivoAlertas(agenteId), JSON.stringify(lista, null, 2));
+  return alerta;
+}
+
+function marcarAlertaLeida(agenteId, id) {
+  const lista = leerAlertas(agenteId);
+  const idx = lista.findIndex((a) => a.id === id);
+  if (idx === -1) return false;
+  lista[idx].leida = true;
+  fs.writeFileSync(archivoAlertas(agenteId), JSON.stringify(lista, null, 2));
+  return true;
+}
+
+// Recorre data/requerimientos-*.json de TODOS los agentes y genera una
+// alerta por cada requerimiento (mismo tipo+operación) que matchee el item —
+// se usa cuando aparece una propiedad genuinamente NUEVA (no solo
+// modificada) en la sincronización de Mobiliario App, la única fuente con
+// caché histórica hoy (C21/RE-MAX/BienInmuebles son búsquedas en vivo, sin
+// forma de saber si un aviso es "nuevo" desde la última vez).
+function matchearContraTodosLosAgentes(item, origen) {
+  if (!item) return;
+  let archivos;
+  try {
+    archivos = fs.readdirSync(DATA_DIR).filter((f) => /^requerimientos-.+\.json$/.test(f));
+  } catch {
+    return;
+  }
+  for (const archivo of archivos) {
+    const agenteId = archivo.replace(/^requerimientos-/, '').replace(/\.json$/, '');
+    let requerimientos;
+    try {
+      requerimientos = JSON.parse(fs.readFileSync(path.join(DATA_DIR, archivo), 'utf8'));
+    } catch {
+      continue;
+    }
+    for (const r of requerimientos) {
+      if (r.tipo !== item.tipo || r.operacion !== item.operacion) continue;
+      if (matcheaPropiedad({ ...item }, r)) {
+        guardarAlerta(agenteId, {
+          origen,
+          propiedad: {
+            titulo: item.titulo,
+            precio: item.precio,
+            zona: item.zona,
+            tipo: item.tipo,
+            operacion: item.operacion,
+            link: item.link || '',
+          },
+          requerimiento: {
+            id: r.id,
+            cliente: r.cliente,
+            telefono: r.telefono,
+            zona: r.zona,
+            precioMin: r.precioMin,
+            precioMax: r.precioMax,
+          },
+        });
+      }
+    }
+  }
+}
+
 // ---------- Utilidades de precio / zona ----------
 
 // Acepta "65.000", "65,000" o "65000" y devuelve 65000 (entero).
@@ -771,8 +860,24 @@ async function sincronizarMobiliario() {
         })
       );
       for (const r of resultados) {
-        if (r.item) porId[r.id] = { lastmod: r.lastmod, item: r.item };
-        else if (r.item === null) porId[r.id] = { lastmod: r.lastmod, item: null }; // descartado (otra ciudad/categoría) — no reintentar
+        if (r.item) {
+          // "Nueva" = no existía en la caché ANTES de arrancar esta
+          // sincronización (no solo modificada) — dispara el matching contra
+          // requerimientos guardados. cache.listados y porId apuntan al mismo
+          // objeto después de la primera tanda, pero cada id se procesa una
+          // sola vez por corrida, así que el chequeo sigue siendo correcto.
+          const esNueva = !cache.listados[r.id];
+          porId[r.id] = { lastmod: r.lastmod, item: r.item };
+          if (esNueva) {
+            const precioUsd =
+              r.item.precioCrudo == null
+                ? null
+                : r.item.monedaCrudo === 'bob'
+                  ? Math.round(r.item.precioCrudo / 6.96)
+                  : r.item.precioCrudo;
+            matchearContraTodosLosAgentes({ ...r.item, precio: precioUsd }, 'mobiliario');
+          }
+        } else if (r.item === null) porId[r.id] = { lastmod: r.lastmod, item: null }; // descartado (otra ciudad/categoría) — no reintentar
       }
       cache.listados = porId;
       cache.progreso = { procesados: Math.min(i + MOBILIARIO_LOTE, pendientes.length), total: pendientes.length };
@@ -806,6 +911,178 @@ async function sincronizarMobiliario() {
   }
 }
 
+// ---------- Sincronización de requerimientos desde GHL ----------
+// Trae los leads que el bot de WhatsApp de cada cliente marcó con el custom
+// field "Requerimiento" (cuando no encuentra match) y los suma al mismo
+// almacén de requerimientos que ya usa la app — así quedan unificados con
+// los que un agente carga a mano desde el formulario. Mismo patrón que la
+// sincronización de Mobiliario App (flag + guardado de estado + setInterval).
+
+const GHL_SYNC_ESTADO_FILE = path.join(DATA_DIR, 'ghl-sync-estado.json');
+// Más frecuente que Mobiliario (6h): un lead nuevo importa más que una
+// propiedad nueva, y esta sincronización es barata (pocos contactos por
+// cliente comparado con los miles de avisos de Mobiliario App).
+const GHL_RESYNC_HORAS = 1;
+
+// Fuente principal: el `ghlConfig` guardado en cada agente (data/agentes.json)
+// — José Luis lo carga una vez desde el panel admin (ver
+// /api/admin/agentes/:id/ghl) cuando da de alta un cliente nuevo, cada uno
+// queda con su propia conexión, aislada de las demás igual que sus
+// requerimientos. GHL_LOCATIONS (variable de entorno, JSON array con la
+// misma forma) sigue funcionando como fuente extra/de respaldo para no
+// romper nada de lo ya probado — si un agenteId aparece en los dos lados, el
+// de agentes.json gana.
+function leerLocationsGHL() {
+  const deAgentes = leerAgentes()
+    .filter((a) => a.ghlConfig && a.ghlConfig.locationId && a.ghlConfig.token && a.ghlConfig.requerimientoFieldId)
+    .map((a) => ({ agenteId: a.id, ...a.ghlConfig }));
+
+  let deEnv = [];
+  try {
+    const parsed = JSON.parse(process.env.GHL_LOCATIONS || '[]');
+    if (Array.isArray(parsed)) deEnv = parsed;
+  } catch (e) {
+    console.error('GHL_LOCATIONS mal formado (debe ser un JSON array):', e.message);
+  }
+
+  const porAgenteId = new Map(deEnv.map((l) => [l.agenteId, l]));
+  for (const l of deAgentes) porAgenteId.set(l.agenteId, l); // agentes.json tiene prioridad
+  return [...porAgenteId.values()];
+}
+
+function leerEstadoGHL() {
+  try {
+    return JSON.parse(fs.readFileSync(GHL_SYNC_ESTADO_FILE, 'utf8'));
+  } catch {
+    return { sincronizadoEn: null, enProgreso: false, ultimoError: null };
+  }
+}
+
+function guardarEstadoGHL(estado) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(GHL_SYNC_ESTADO_FILE, JSON.stringify(estado));
+}
+
+// Parsea el texto libre que guarda el bot ("Tipo: X | Zona: Y | Presupuesto: Z")
+// a los campos del schema de requerimiento. Best-effort: si el formato no
+// matchea (el bot no siempre lo escribe igual), el texto completo queda en
+// "notas" y el resto vacío — no se descarta el lead por un formato distinto.
+function parsearRequerimientoLibre(texto) {
+  const campos = { notas: texto || '' };
+  if (!texto) return campos;
+  const tipoM = texto.match(/tipo:\s*([^|]+)/i);
+  const zonaM = texto.match(/zona:\s*([^|]+)/i);
+  const presM = texto.match(/presupuesto:\s*([^|]+)/i);
+  if (tipoM) {
+    const t = tipoM[1].trim().toLowerCase();
+    if (t.includes('depart')) campos.tipo = 'departamento';
+    else if (t.includes('terreno')) campos.tipo = 'terreno';
+    else if (t.includes('oficina')) campos.tipo = 'oficina';
+    else if (t.includes('local')) campos.tipo = 'local';
+    else if (t.includes('casa')) campos.tipo = 'casa';
+  }
+  if (zonaM) campos.zona = zonaM[1].trim();
+  if (presM) {
+    const numeros = presM[1].match(/[\d.,]+/g);
+    if (numeros) campos.precioMax = numeros[numeros.length - 1].replace(/[.,]/g, '');
+  }
+  return campos;
+}
+
+async function fetchContactosGHL(location, cursor) {
+  const body = { locationId: location.locationId, pageLimit: 100 };
+  if (cursor) body.searchAfter = cursor;
+  const res = await fetch('https://services.leadconnectorhq.com/contacts/search', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + location.token,
+      Version: '2021-07-28',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+
+let sincronizandoRequerimientosGHL = false;
+
+async function sincronizarRequerimientosGHL() {
+  if (sincronizandoRequerimientosGHL) return;
+  const locations = leerLocationsGHL();
+  if (!locations.length) return; // nada configurado en GHL_LOCATIONS todavía
+  sincronizandoRequerimientosGHL = true;
+  const estado = { sincronizadoEn: null, enProgreso: true, ultimoError: null };
+  guardarEstadoGHL(estado);
+  try {
+    for (const loc of locations) {
+      if (!loc.agenteId || !loc.locationId || !loc.token || !loc.requerimientoFieldId) {
+        console.error('Entrada de GHL_LOCATIONS incompleta, se salta:', JSON.stringify(loc));
+        continue;
+      }
+      try {
+        const lista = leerRequerimientos(loc.agenteId);
+        const porContactId = new Map(lista.filter((r) => r.contactId).map((r) => [r.contactId, r]));
+        let cursor = null;
+        let seguir = true;
+        while (seguir) {
+          const resp = await fetchContactosGHL(loc, cursor);
+          const contactos = resp.contacts || [];
+          for (const c of contactos) {
+            const campo = (c.customFields || []).find((f) => f.id === loc.requerimientoFieldId);
+            const texto = campo && Array.isArray(campo.value) ? campo.value.join(' ') : campo?.value;
+            if (!texto || !texto.trim()) continue;
+            const parseado = parsearRequerimientoLibre(texto);
+            const existente = porContactId.get(c.id);
+            porContactId.set(c.id, {
+              ...camposRequerimiento({
+                cliente: c.contactName || c.firstName || 'Lead de GHL',
+                telefono: c.phone || '',
+                operacion: 'venta',
+                ...parseado,
+              }),
+              id: existente ? existente.id : Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+              creado: existente ? existente.creado : new Date().toISOString(),
+              enviados: existente ? existente.enviados || [] : [],
+              origen: 'ghl',
+              contactId: c.id,
+              locationId: loc.locationId,
+            });
+          }
+          cursor = contactos.length ? contactos[contactos.length - 1].searchAfter : null;
+          seguir = contactos.length === 100 && !!cursor;
+        }
+        // Reconstruir la lista: los que vinieron de GHL se reemplazan por su
+        // versión actualizada (dedup por contactId vía el Map); los cargados
+        // a mano (sin contactId) se preservan tal cual, sin tocarlos.
+        const manuales = lista.filter((r) => !r.contactId);
+        guardarRequerimientos([...manuales, ...porContactId.values()], loc.agenteId);
+      } catch (e) {
+        console.error('Error sincronizando requerimientos de GHL para', loc.agenteId, ':', e.message);
+      }
+    }
+    estado.sincronizadoEn = new Date().toISOString();
+  } catch (e) {
+    estado.ultimoError = 'No se pudo sincronizar: ' + e.message;
+  } finally {
+    estado.enProgreso = false;
+    guardarEstadoGHL(estado);
+    sincronizandoRequerimientosGHL = false;
+  }
+}
+
+function chequearResyncRequerimientosGHL() {
+  if (!leerLocationsGHL().length) return; // GHL_LOCATIONS no configurado — nada que hacer
+  const estado = leerEstadoGHL();
+  const horasDesdeUltimaSync = estado.sincronizadoEn
+    ? (Date.now() - new Date(estado.sincronizadoEn).getTime()) / 3600000
+    : Infinity;
+  if (!estado.enProgreso && horasDesdeUltimaSync >= GHL_RESYNC_HORAS) {
+    console.log('Sincronizando requerimientos de GHL en segundo plano…');
+    sincronizarRequerimientosGHL().catch((e) => console.error('Error sincronizando requerimientos de GHL:', e));
+  }
+}
+
 // Lee de la caché ya sincronizada (rápido, sin red) y filtra por lo que pide
 // este requerimiento — el mismo patrón de "traer todo y filtrar local" que
 // las otras 3 fuentes, salvo que acá "traer todo" ya pasó en segundo plano.
@@ -825,6 +1102,68 @@ async function fetchMobiliario(req, tc) {
     ...it,
     precio: it.precioCrudo == null ? null : it.monedaCrudo === 'bob' ? Math.round(it.precioCrudo / tc) : it.precioCrudo,
   }));
+}
+
+// ---------- Matching de 1 propiedad contra 1 requerimiento ----------
+// Extraído de buscarTodo (antes vivía inline en su cadena de .filter()) para
+// poder reusarlo comparando UNA propiedad nueva (ficha cargada a mano, o un
+// item nuevo detectado en la sincronización de Mobiliario App) contra los
+// requerimientos guardados, sin tener que rearmar una búsqueda completa.
+// Muta el item con cercaPresupuesto/destaca (mismo criterio que antes) y
+// devuelve true/false según si la propiedad matchea el requerimiento.
+// buscarTodo la usa para comparar N propiedades contra 1 solo req (el
+// formulario de búsqueda); la sincronización GHL/Mobiliario la usa al revés,
+// 1 propiedad contra N requerimientos guardados — misma función en ambos casos.
+function matcheaPropiedad(item, req) {
+  const zonas = parseZonas(req.zona);
+  if (zonas.length && !zonas.some((z) => zonaMatch(item, z))) return false;
+
+  const { precioMinUsd, precioMaxUsd } = convertirPresupuesto(req);
+  const MARGEN_PRECIO = 0.12;
+  const precioMinConMargen = precioMinUsd ? Math.round(precioMinUsd * (1 - MARGEN_PRECIO)) : null;
+  const precioMaxConMargen = precioMaxUsd ? Math.round(precioMaxUsd * (1 + MARGEN_PRECIO)) : null;
+  if (precioMinConMargen && (item.precio == null || item.precio < precioMinConMargen)) return false;
+  if (precioMaxConMargen && (item.precio == null || item.precio > precioMaxConMargen)) return false;
+  item.cercaPresupuesto =
+    item.precio != null &&
+    ((precioMinUsd != null && item.precio < precioMinUsd) || (precioMaxUsd != null && item.precio > precioMaxUsd));
+
+  if (req.dormitorios && APLICA_DORMITORIOS.has(req.tipo)) {
+    if (item.dormitorios == null || item.dormitorios < Number(req.dormitorios)) return false;
+  }
+  if (req.banos) {
+    if (item.banos == null || item.banos < Number(req.banos)) return false;
+  }
+
+  const mtMin = parsePrecio(req.m2TerrenoMin);
+  const mtMax = parsePrecio(req.m2TerrenoMax);
+  const mcMin = parsePrecio(req.m2ConstruccionMin);
+  const mcMax = parsePrecio(req.m2ConstruccionMax);
+  if (mtMin && (item.m2Terreno == null || item.m2Terreno < mtMin)) return false;
+  if (mtMax && (item.m2Terreno == null || item.m2Terreno > mtMax)) return false;
+  if (mcMin && (item.m2Construccion == null || item.m2Construccion < mcMin)) return false;
+  if (mcMax && (item.m2Construccion == null || item.m2Construccion > mcMax)) return false;
+
+  const antiguedadMaxDias = req.antiguedadMaxDias ? Number(req.antiguedadMaxDias) : null;
+  if (antiguedadMaxDias) {
+    const corte = Date.now() - antiguedadMaxDias * 24 * 60 * 60 * 1000;
+    if (item.fecha && new Date(item.fecha).getTime() < corte) return false;
+  }
+
+  const excluir = (req.excluir || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  if (excluir.length && excluir.some((p) => quitarAcentos(textoItem(item)).includes(quitarAcentos(p)))) return false;
+
+  const destacar = (req.palabras || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  item.destaca = destacar.some((p) => quitarAcentos(textoItem(item)).includes(quitarAcentos(p)));
+  if (destacar.length && req.filtroEstricto === '1' && !item.destaca) return false;
+
+  return true;
 }
 
 // ---------- Búsqueda combinada ----------
@@ -849,6 +1188,10 @@ async function buscarTodo(req) {
   const MARGEN_PRECIO = 0.12;
   const precioMinConMargen = precioMinUsd ? Math.round(precioMinUsd * (1 - MARGEN_PRECIO)) : null;
   const precioMaxConMargen = precioMaxUsd ? Math.round(precioMaxUsd * (1 + MARGEN_PRECIO)) : null;
+  // Recalculado acá (además de adentro de matcheaPropiedad) solo para el
+  // objeto de retorno que usa la UI — el filtrado real ya lo aplica
+  // matcheaPropiedad por su cuenta con este mismo criterio.
+  const antiguedadMaxDias = req.antiguedadMaxDias ? Number(req.antiguedadMaxDias) : null;
 
   // Antes un fallo de cualquier fuente (ej. un bloqueo anti-bot) se tragaba
   // en silencio con `.catch(() => [])` — la búsqueda mostraba menos avisos
@@ -885,62 +1228,18 @@ async function buscarTodo(req) {
     'Mobiliario App': mobiliario.length,
   };
 
-  // Filtro de zona: el aviso debe coincidir con alguna de las zonas pedidas
-  if (zonas.length) {
-    items = items.filter((i) => zonas.some((z) => zonaMatch(i, z)));
-  }
-  // Precio en US$ (si el aviso no declara precio, no pasa). Dentro del rango
-  // exacto pasa directo; entre el rango exacto y el margen queda marcado
-  // "cercaPresupuesto" (se muestra igual, pero se avisa y se ordena después).
-  if (precioMinConMargen) items = items.filter((i) => i.precio != null && i.precio >= precioMinConMargen);
-  if (precioMaxConMargen) items = items.filter((i) => i.precio != null && i.precio <= precioMaxConMargen);
-  for (const i of items) {
-    i.cercaPresupuesto =
-      i.precio != null &&
-      ((precioMinUsd != null && i.precio < precioMinUsd) || (precioMaxUsd != null && i.precio > precioMaxUsd));
-  }
-  // Dormitorios (solo casa/departamento)
-  if (req.dormitorios && APLICA_DORMITORIOS.has(req.tipo))
-    items = items.filter((i) => i.dormitorios != null && i.dormitorios >= Number(req.dormitorios));
-  // Baños (mínimo)
-  if (req.banos)
-    items = items.filter((i) => i.banos != null && i.banos >= Number(req.banos));
-  // Medidas: m² de terreno y de construcción (mín/máx). Si el aviso no declara la
-  // medida, no pasa el filtro correspondiente.
-  const mtMin = parsePrecio(req.m2TerrenoMin);
-  const mtMax = parsePrecio(req.m2TerrenoMax);
-  const mcMin = parsePrecio(req.m2ConstruccionMin);
-  const mcMax = parsePrecio(req.m2ConstruccionMax);
-  if (mtMin) items = items.filter((i) => i.m2Terreno != null && i.m2Terreno >= mtMin);
-  if (mtMax) items = items.filter((i) => i.m2Terreno != null && i.m2Terreno <= mtMax);
-  if (mcMin) items = items.filter((i) => i.m2Construccion != null && i.m2Construccion >= mcMin);
-  if (mcMax) items = items.filter((i) => i.m2Construccion != null && i.m2Construccion <= mcMax);
+  // El nivel se asigna ACÁ (no dentro de los normalizadores normalizarC21/
+  // Remax/BienInmuebles/Mobiliario) porque es relativo a este ACM puntual,
+  // no una propiedad fija del aviso — todo lo scrapeado entra como B. Los
+  // comparables manuales (más abajo) llegan con su propio nivel A/C.
+  for (const i of items) i.nivel = 'B';
 
-  // Antigüedad: descarta avisos más viejos que el límite pedido. Si NO se
-  // conoce la fecha del aviso (ej. BienInmuebles no la expone), se deja pasar
-  // en vez de descartarlo — lo contrario borraría en silencio el 100% de las
-  // fuentes sin fecha (bug corregido 2026-07-19, mismo patrón que el umbral
-  // de alquileres: "no se sabe" no debería significar "se descarta").
-  const antiguedadMaxDias = req.antiguedadMaxDias ? Number(req.antiguedadMaxDias) : null;
-  if (antiguedadMaxDias) {
-    const corte = Date.now() - antiguedadMaxDias * 24 * 60 * 60 * 1000;
-    items = items.filter((i) => !i.fecha || new Date(i.fecha).getTime() >= corte);
-  }
-
-  // Excluir: descarta lo que el cliente no quiere (ej. "condominio" cuando
-  // pidió "fuera de condominio"). Sin tildes de los dos lados, mismo criterio
-  // que zonaMatch — "área" tiene que encontrar "area" y viceversa.
-  if (excluir.length) {
-    items = items.filter((i) => !excluir.some((p) => quitarAcentos(textoItem(i)).includes(quitarAcentos(p))));
-  }
-
-  // Palabras clave: por defecto solo ordenan (los que las mencionan salen
-  // primero). Con filtroEstricto=1 además descartan lo que no las menciona
-  // — puede dar pocos o cero resultados si el aviso no usa esa palabra.
-  for (const i of items) i.destaca = destacar.some((p) => quitarAcentos(textoItem(i)).includes(quitarAcentos(p)));
-  if (destacar.length && req.filtroEstricto === '1') {
-    items = items.filter((i) => i.destaca);
-  }
+  // Filtrado completo (zona, precio+margen, dormitorios/baños, m², antigüedad,
+  // excluir, palabras+filtroEstricto) — misma lógica de siempre, ahora en
+  // matcheaPropiedad para poder reusarla comparando 1 sola propiedad nueva
+  // contra requerimientos guardados (ver sincronizarRequerimientosGHL y el
+  // enganche en sincronizarMobiliario).
+  items = items.filter((i) => matcheaPropiedad(i, req));
   items.sort(
     (a, b) =>
       Number(b.destaca) - Number(a.destaca) ||
@@ -951,6 +1250,12 @@ async function buscarTodo(req) {
   const porFuente = { 'Century 21': 0, 'RE/MAX': 0, BienInmuebles: 0, 'Mobiliario App': 0 };
   for (const i of items) porFuente[i.fuente] = (porFuente[i.fuente] || 0) + 1;
   const cantidadCerca = items.filter((i) => i.cercaPresupuesto).length;
+
+  // Sujeto (punto medio de los rangos m² pedidos) y comparables manuales
+  // (cierres reales u otra referencia cargados a mano) — solo alimentan el
+  // ACM, nunca aparecen en `listados` (no son avisos reales de portal).
+  const sujeto = calcularSujeto(req);
+  const comparablesManuales = parsearComparablesManuales(req.comparablesManuales, req.tipo);
 
   return {
     listados: items,
@@ -967,7 +1272,7 @@ async function buscarTodo(req) {
     destacar,
     excluir,
     antiguedadMaxDias,
-    analisisMercado: calcularEstadisticasMercado(items, req.tipo),
+    analisisMercado: calcularEstadisticasMercado([...items, ...comparablesManuales], req.tipo, sujeto),
   };
 }
 
@@ -984,22 +1289,187 @@ function mediana(numsOrdenados) {
   return Math.round(valor);
 }
 
-function calcularEstadisticasMercado(items, tipo) {
+// Pondera cada comparable en vez de tratarlos todos igual: nivel de origen
+// del dato (A=cierre real cargado a mano, B=scrapeado, C=referencia informal
+// cargada a mano), completitud de la fuente, cuán parecido es en tamaño al
+// "sujeto" (punto medio del rango m² pedido en el form) y recencia (solo si
+// se conoce la fecha — su ausencia nunca penaliza). Separa "cálculo" (acá,
+// determinístico) de "redacción" (la IA en generarACM, más abajo) — el
+// número que ve el agente no depende de qué tan bien redactó el modelo esa
+// tanda.
+const PESO_NIVEL = { A: 3, B: 1, C: 0.5 };
+const PESO_FUENTE = { 'Century 21': 1.15, 'RE/MAX': 1.15, BienInmuebles: 0.9, 'Mobiliario App': 0.9 };
+const PESO_OUTLIER_B = 0.25; // a un B marcado outlier no se lo excluye, se le baja el peso a esto
+const UMBRAL_OUTLIER = 0.25; // desviación >25% de la mediana (solo-B, o de su cuartil en terreno) = outlier
+const TOPE_PESO_FRACCION = 0.15; // ningún comparable puede aportar más del 15% del peso total
+
+// Filtro de cordura — preprocesamiento, DISTINTO del chequeo de outlier de
+// abajo (que compara contra el mercado). Esto descarta errores de tipeo de
+// origen antes de que entren a cualquier cálculo, mismo criterio que ya usa
+// normalizarC21 con su umbral de precio. Ej. real encontrado: un aviso de
+// Century 21 con m2Construccion=1.432 (typo, falta un dígito) que disparaba
+// un precio/m² de 698.324 — ni el chequeo de outlier de más abajo alcanza a
+// neutralizar un dato así de roto, tiene que quedar afuera antes.
+const M2_CONSTRUCCION_MIN = 15;
+const PRECIO_M2_MIN = 50;
+const PRECIO_M2_MAX = 10000;
+
+function esComparableSano(item, campoM2) {
+  const m2 = item[campoM2];
+  if (!(m2 > 0)) return false;
+  if (campoM2 === 'm2Construccion' && m2 < M2_CONSTRUCCION_MIN) return false;
+  const precioM2 = item.precio / m2;
+  return precioM2 >= PRECIO_M2_MIN && precioM2 <= PRECIO_M2_MAX;
+}
+
+function factorRecencia(fecha) {
+  if (!fecha) return 1; // sin fecha = neutral, nunca se penaliza la ausencia del dato
+  const dias = (Date.now() - new Date(fecha).getTime()) / 86400000;
+  if (!Number.isFinite(dias) || dias < 0) return 1;
+  if (dias <= 30) return 1.1;
+  if (dias <= 90) return 1;
+  if (dias <= 180) return 0.9;
+  return 0.8;
+}
+
+// Punto medio del rango m² pedido en el form — no hay ficha de una única
+// propiedad "sujeto", solo mín/máx, así que se usa el promedio de los dos (o
+// el que esté definido si el otro quedó vacío).
+function calcularSujeto(req) {
+  const puntoMedio = (min, max) => {
+    const mn = parsePrecio(min);
+    const mx = parsePrecio(max);
+    if (mn != null && mx != null) return (mn + mx) / 2;
+    return mn ?? mx ?? null;
+  };
+  return {
+    m2Terreno: puntoMedio(req.m2TerrenoMin, req.m2TerrenoMax),
+    m2Construccion: puntoMedio(req.m2ConstruccionMin, req.m2ConstruccionMax),
+  };
+}
+
+function calcularEstadisticasMercado(items, tipo, sujeto) {
   const conPrecio = items.filter((i) => i.precio != null);
   if (!conPrecio.length) return null;
   const precios = conPrecio.map((i) => i.precio).sort((a, b) => a - b);
 
   // Terreno se compara por precio/m² de terreno; el resto (casa, depto,
-  // local, oficina) por precio/m² construido.
+  // local, oficina) por precio/m² construido. `esComparableSano` es el
+  // filtro de cordura — corre ACÁ, antes de cualquier otra cosa, y es
+  // independiente del chequeo de outlier estadístico de más abajo.
   const campoM2 = tipo === 'terreno' ? 'm2Terreno' : 'm2Construccion';
-  const conM2 = conPrecio.filter((i) => i[campoM2] > 0);
+  const conM2 = conPrecio.filter((i) => esComparableSano(i, campoM2));
   let precioM2Promedio = null;
   let precioM2Mediana = null;
+  let precioM2Ponderado = null;
+  const comparablesDetalle = [];
+
   if (conM2.length) {
-    const preciosM2 = conM2.map((i) => i.precio / i[campoM2]).sort((a, b) => a - b);
-    precioM2Promedio = Math.round(preciosM2.reduce((s, p) => s + p, 0) / preciosM2.length);
-    precioM2Mediana = mediana(preciosM2);
+    const conRatio = conM2.map((i) => ({ item: i, precioM2: i.precio / i[campoM2] }));
+    const preciosM2Ordenados = conRatio.map((c) => c.precioM2).sort((a, b) => a - b);
+    precioM2Promedio = Math.round(preciosM2Ordenados.reduce((s, p) => s + p, 0) / preciosM2Ordenados.length);
+    precioM2Mediana = mediana(preciosM2Ordenados);
+
+    // Outliers: SOLO se detectan (y solo afectan el peso de) comparables
+    // Nivel B — la mediana de referencia para detectarlos también se calcula
+    // solo con B, para no contaminarla con cierres reales (A) ni referencias
+    // informales (C).
+    const soloB = conRatio.filter((c) => (c.item.nivel || 'B') === 'B');
+
+    // En terreno, la mediana de referencia se calcula POR CUARTIL de tamaño
+    // (m2Terreno) en vez de global — un lote urbano chico y un terreno rural
+    // grande no son la misma población de precio/m², aunque compartan la
+    // misma zona de texto libre. Con pocos B (<4) no alcanza para 4 grupos
+    // con sentido: se usa la mediana global como respaldo.
+    let medianaParaItem;
+    if (tipo === 'terreno' && soloB.length >= 4) {
+      const ordenadosPorTamano = [...soloB].sort((a, b) => a.item[campoM2] - b.item[campoM2]);
+      const n = ordenadosPorTamano.length;
+      const cuartilDe = (idx) => Math.min(3, Math.floor((idx / n) * 4));
+      const cuartilPorItem = new Map();
+      ordenadosPorTamano.forEach((c, idx) => cuartilPorItem.set(c.item, cuartilDe(idx)));
+      const medianaPorCuartil = new Map();
+      for (let q = 0; q < 4; q++) {
+        const delCuartil = ordenadosPorTamano.filter((c, idx) => cuartilDe(idx) === q);
+        if (delCuartil.length) medianaPorCuartil.set(q, mediana(delCuartil.map((c) => c.precioM2).sort((a, b) => a - b)));
+      }
+      medianaParaItem = (entry) => medianaPorCuartil.get(cuartilPorItem.get(entry.item)) ?? null;
+    } else {
+      const medianaGlobalB = soloB.length ? mediana(soloB.map((c) => c.precioM2).sort((a, b) => a - b)) : null;
+      medianaParaItem = () => medianaGlobalB;
+    }
+
+    // Pase 1: peso "crudo" de cada comparable (nivel × fuente × tamaño ×
+    // recencia × outlier), sin topar todavía.
+    const crudos = conRatio.map(({ item, precioM2 }) => {
+      const nivel = item.nivel || 'B';
+      // Nivel A (cierre real) queda SIEMPRE fuera del chequeo de outlier —
+      // esOutlier=false por definición sin importar cuánto se desvíe de la
+      // mediana de portal: un cierre real no se penaliza por ser distinto al
+      // mercado publicado. Mismo motivo excluye a C (no es dato de portal).
+      const medianaRef = nivel === 'B' ? medianaParaItem({ item, precioM2 }) : null;
+      const esOutlier = nivel === 'B' && medianaRef != null ? Math.abs(precioM2 - medianaRef) / medianaRef > UMBRAL_OUTLIER : false;
+
+      const deltaTam = sujeto?.[campoM2]
+        ? Math.abs((item[campoM2] - sujeto[campoM2]) / sujeto[campoM2])
+        : 0; // sin sujeto definido = neutral, no se penaliza
+      const similitudTamano = 1 / (1 + deltaTam);
+
+      const peso =
+        (PESO_NIVEL[nivel] ?? PESO_NIVEL.B) *
+        (PESO_FUENTE[item.fuente] ?? 1) *
+        similitudTamano *
+        factorRecencia(item.fecha) *
+        (esOutlier ? PESO_OUTLIER_B : 1);
+
+      return { item, precioM2, nivel, esOutlier, peso };
+    });
+
+    // Pase 2: tope de peso por comparable — red de seguridad aparte del
+    // chequeo de outlier de arriba: ningún comparable puede aportar más del
+    // 15% del peso total, pase o no el filtro de cordura y el chequeo de
+    // outlier. Cálculo de una sola pasada sobre el total sin topear (no
+    // iterativo — alcanza para una red de seguridad).
+    const sumaPesoSinTope = crudos.reduce((s, c) => s + c.peso, 0);
+    const topePeso = sumaPesoSinTope * TOPE_PESO_FRACCION;
+
+    let sumaPesoPrecio = 0;
+    let sumaPeso = 0;
+    for (const c of crudos) {
+      const pesoFinal = topePeso > 0 ? Math.min(c.peso, topePeso) : c.peso;
+      sumaPesoPrecio += c.precioM2 * pesoFinal;
+      sumaPeso += pesoFinal;
+      comparablesDetalle.push({
+        link: c.item.link,
+        fuente: c.item.fuente,
+        nivel: c.nivel,
+        precioM2: Math.round(c.precioM2),
+        peso: Math.round(pesoFinal * 100) / 100,
+        esOutlier: c.esOutlier,
+      });
+    }
+    precioM2Ponderado = sumaPeso > 0 ? Math.round(sumaPesoPrecio / sumaPeso) : precioM2Mediana;
   }
+
+  // ---------- confiabilidadGlobal ----------
+  let score = 100;
+  if (conM2.length < 3) score -= 40;
+  const conFecha = conM2.filter((i) => i.fecha).length;
+  if (conM2.length && conFecha / conM2.length < 0.3) score -= 15;
+  if (comparablesDetalle.length) {
+    const ratios = comparablesDetalle.map((c) => c.precioM2);
+    const media = ratios.reduce((s, p) => s + p, 0) / ratios.length;
+    const varianza = ratios.reduce((s, p) => s + (p - media) ** 2, 0) / ratios.length;
+    const cv = media ? Math.sqrt(varianza) / media : 0;
+    if (cv > 0.35) score -= 25;
+  }
+  const hayNivelA = comparablesDetalle.some((c) => c.nivel === 'A');
+  score += hayNivelA ? 10 : -10;
+  score = Math.max(0, Math.min(100, score));
+  const confiabilidadGlobal = {
+    score,
+    etiqueta: score >= 80 ? 'Alta' : score >= 50 ? 'Media' : 'Baja — tratar como referencia, no conclusión',
+  };
 
   return {
     cantidadComparables: conPrecio.length,
@@ -1011,42 +1481,94 @@ function calcularEstadisticasMercado(items, tipo) {
     precioMax: precios[precios.length - 1],
     precioM2Promedio,
     precioM2Mediana,
+    precioM2Ponderado,
+    confiabilidadGlobal,
+    comparablesDetalle,
   };
 }
 
-const PROMPT_ACM =
-  'Sos un tasador inmobiliario experto en Santa Cruz de la Sierra, Bolivia. Te paso los criterios de una ' +
-  'propiedad (el "sujeto" del análisis), estadísticas de mercado y una muestra de comparables reales. Armá un ' +
-  'Análisis Comparativo de Mercado (ACM) breve en español, sin emojis, con esta estructura en párrafos separados: ' +
-  '1) Rango de valor de mercado sugerido — usá la MEDIANA de precio/m² como referencia central (es más confiable ' +
-  'que el promedio si hay outliers), ajustá el rango según qué tan dispersos están los comparables; ' +
-  '2) Mencioná 2-3 comparables específicos relevantes (por precio, tamaño o ubicación) y por qué importan para la ' +
-  'referencia; ' +
-  '3) Una frase final con una recomendación práctica (ej. precio de publicación sugerido, o qué conviene ' +
-  'confirmar antes de dar un valor definitivo). Máximo 8 líneas en total. Sé honesto si hay pocos comparables o ' +
-  'son poco representativos — no inventes precisión que no existe con los datos disponibles.';
-
-function contextoACM(listados) {
-  return listados.slice(0, 20).map((i) => ({
-    fuente: i.fuente,
-    precio: i.precio,
-    zona: i.zona,
-    dormitorios: i.dormitorios,
-    banos: i.banos,
-    m2Terreno: i.m2Terreno,
-    m2Construccion: i.m2Construccion,
-    titulo: i.titulo,
-  }));
+// Comparables cargados a mano (cierres reales u otra referencia) — nivel A o
+// C según lo que indique el agente. Si el JSON viene mal formado se ignora
+// en silencio: nunca debe romper la búsqueda normal por esto.
+function parsearComparablesManuales(json, tipo) {
+  if (!json) return [];
+  let lista;
+  try {
+    lista = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(lista)) return [];
+  return lista
+    .map((c) => ({
+      fuente: 'Manual',
+      nivel: c.nivel === 'A' ? 'A' : 'C',
+      precio: parsePrecio(c.precio),
+      m2Terreno: tipo === 'terreno' ? parsePrecio(c.m2) : null,
+      m2Construccion: tipo !== 'terreno' ? parsePrecio(c.m2) : null,
+      fecha: c.fecha || null,
+      titulo: c.nota || 'Comparable manual',
+      link: c.link || 'manual-' + Math.random().toString(36).slice(2),
+      zona: '',
+    }))
+    .filter((c) => c.precio != null && (c.m2Terreno != null || c.m2Construccion != null));
 }
 
-async function generarACM(req, listados, stats) {
+// La IA ya recibe precioM2Ponderado, confiabilidadGlobal y comparablesDetalle
+// CALCULADOS (ver calcularEstadisticasMercado) — su único trabajo es redactar
+// sobre esos números, nunca recalcularlos ni reclasificar comparables.
+const PROMPT_ACM =
+  'Sos un tasador inmobiliario en Santa Cruz de la Sierra, Bolivia. Ya te paso las estadísticas y la ' +
+  'clasificación de comparables YA CALCULADAS — tu único trabajo es REDACTAR, nunca recalcular ni ' +
+  'reclasificar nada (no cambies niveles A/B/C, no inventes otro precio/m² de referencia, usá siempre ' +
+  'precioM2Ponderado y confiabilidadGlobal tal como vienen). Devolvé SOLO este JSON, sin texto extra ni ' +
+  'bloques de código: {"rangoSugerido":{"min":number,"max":number},"comentarioComparables":string,' +
+  '"recomendacionPractica":string,"riesgoSiConfiabilidadBaja":string}. Reglas: rangoSugerido en USD, ' +
+  'centrado en precioM2Ponderado × el m² del sujeto, con un ancho que dependa de la dispersión (más ancho ' +
+  'si confiabilidadGlobal.score es bajo); comentarioComparables menciona 2-3 comparables específicos de ' +
+  'comparablesDetalle (por link o descripción breve) y por qué pesan lo que pesan (nivel, outlier, ' +
+  'similitud de tamaño); recomendacionPractica es una frase práctica (precio de publicación sugerido o ' +
+  'qué confirmar); riesgoSiConfiabilidadBaja: si confiabilidadGlobal.etiqueta es "Alta", dejá "" — si no, ' +
+  'una frase explícita de qué tan poco confiable es el número y por qué (pocos comparables, sin cierres ' +
+  'reales, dispersión alta, etc., según corresponda). Sin emojis, español, tono directo.';
+
+const SCHEMA_ACM = {
+  type: 'object',
+  properties: {
+    rangoSugerido: {
+      type: 'object',
+      properties: { min: { type: 'number' }, max: { type: 'number' } },
+      required: ['min', 'max'],
+      additionalProperties: false,
+    },
+    comentarioComparables: { type: 'string' },
+    recomendacionPractica: { type: 'string' },
+    riesgoSiConfiabilidadBaja: { type: 'string' },
+  },
+  required: ['rangoSugerido', 'comentarioComparables', 'recomendacionPractica', 'riesgoSiConfiabilidadBaja'],
+  additionalProperties: false,
+};
+
+// Ya no manda el listado crudo de comparables (antes: contextoACM) — manda
+// las stats + la clasificación tal como las calculó calcularEstadisticasMercado,
+// para que la IA redacte sobre eso sin poder "corregir" el cálculo por su cuenta.
+async function generarACM(req, stats) {
   if (!stats) return null;
   const user =
-    `Propiedad sujeto (criterios buscados):\n${JSON.stringify(req)}\n\n` +
-    `Estadísticas de los comparables:\n${JSON.stringify(stats)}\n\n` +
-    `Muestra de comparables:\n${JSON.stringify(contextoACM(listados))}`;
+    `Criterios buscados (sujeto):\n${JSON.stringify(req)}\n\n` +
+    `Estadísticas ya calculadas:\n${JSON.stringify(stats)}`;
   const proveedor = estadoIA().proveedor;
-  return proveedor === 'gemini' ? await llamarGemini(PROMPT_ACM, user, false) : await llamarClaude(PROMPT_ACM, user, null);
+  const text =
+    proveedor === 'gemini'
+      ? await llamarGemini(PROMPT_ACM, user, true)
+      : await llamarClaude(PROMPT_ACM, user, SCHEMA_ACM);
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Degradado: si la IA no devolvió JSON válido, no se rompe la respuesta —
+    // se muestra el texto crudo donde iría el comentario de comparables.
+    return { rangoSugerido: null, comentarioComparables: text, recomendacionPractica: '', riesgoSiConfiabilidadBaja: '' };
+  }
 }
 
 // ---------- Capa de IA (opcional) ----------
@@ -1348,6 +1870,53 @@ async function manejarRequest(req, res) {
   if (url.pathname.startsWith('/api/admin/')) {
     if (!esAdmin(req)) return json(res, 403, { error: 'Clave de administrador inválida.' });
 
+    // Crear un agente "por CLI" (sin email/password) directo desde el panel
+    // — mismo esquema exacto que scripts/agentes.js, para no depender de
+    // acceso por SSH/terminal al servidor donde corre la app.
+    if (url.pathname === '/api/admin/agentes' && req.method === 'POST') {
+      const body = await leerBody(req);
+      const nombre = (body.nombre || '').trim();
+      if (!nombre) return json(res, 400, { error: 'Falta el nombre.' });
+      const lista = leerAgentes();
+      const nuevo = {
+        id: crypto.randomBytes(4).toString('hex'),
+        nombre,
+        apiKey: 'sof_' + crypto.randomBytes(24).toString('hex'),
+        creado: new Date().toISOString(),
+        activo: true,
+      };
+      lista.push(nuevo);
+      guardarAgentes(lista);
+      return json(res, 200, { id: nuevo.id, nombre: nuevo.nombre, apiKey: nuevo.apiKey });
+    }
+
+    // José Luis necesita poder recuperar el acceso de un agente (cliente que
+    // olvidó su contraseña, o para conseguir su link directo) sin tener SSH
+    // a producción — todo vía el panel admin, protegido por ADMIN_KEY.
+    const mApiKey = url.pathname.match(/^\/api\/admin\/agentes\/([^/]+)\/apikey$/);
+    if (mApiKey && req.method === 'GET') {
+      const [, id] = mApiKey;
+      const agente = leerAgentes().find((a) => a.id === id);
+      if (!agente) return json(res, 404, { error: 'No existe ese agente.' });
+      return json(res, 200, { id: agente.id, nombre: agente.nombre, apiKey: agente.apiKey });
+    }
+
+    const mResetPassword = url.pathname.match(/^\/api\/admin\/agentes\/([^/]+)\/reset-password$/);
+    if (mResetPassword && req.method === 'POST') {
+      const [, id] = mResetPassword;
+      const body = await leerBody(req);
+      if (!body.password || body.password.length < 6) {
+        return json(res, 400, { error: 'La contraseña debe tener al menos 6 caracteres.' });
+      }
+      const lista = leerAgentes();
+      const idx = lista.findIndex((a) => a.id === id);
+      if (idx === -1) return json(res, 404, { error: 'No existe ese agente.' });
+      const { salt, hash } = hashPassword(body.password);
+      lista[idx] = { ...lista[idx], passwordSalt: salt, passwordHash: hash };
+      guardarAgentes(lista);
+      return json(res, 200, { ok: true, email: lista[idx].email || null });
+    }
+
     if (url.pathname === '/api/admin/agentes' && req.method === 'GET') {
       const agentesConDatos = leerAgentes().map((a) => ({
         id: a.id,
@@ -1357,9 +1926,44 @@ async function manejarRequest(req, res) {
         creado: a.creado,
         activo: a.activo !== false,
         cantidadRequerimientos: leerRequerimientos(a.id).length,
+        // No se manda el token acá (aunque este panel ya está protegido por
+        // ADMIN_KEY) — con saber que está conectado alcanza para la tabla.
+        ghlConectado: !!(a.ghlConfig && a.ghlConfig.locationId),
+        ghlLocationId: a.ghlConfig?.locationId || null,
       }));
       agentesConDatos.sort((x, y) => new Date(y.creado) - new Date(x.creado));
       return json(res, 200, agentesConDatos);
+    }
+
+    // Conectar (o actualizar) la cuenta de GHL de un agente — José Luis la
+    // carga una vez por cliente nuevo; queda guardada junto a ese agente,
+    // aislada de los demás (mismo criterio que sus requerimientos propios).
+    const mGhlConectar = url.pathname.match(/^\/api\/admin\/agentes\/([^/]+)\/ghl$/);
+    if (mGhlConectar && req.method === 'POST') {
+      const [, id] = mGhlConectar;
+      const lista = leerAgentes();
+      const agente = lista.find((a) => a.id === id);
+      if (!agente) return json(res, 404, { error: 'No existe ese agente.' });
+      const body = await leerBody(req);
+      if (!body.locationId || !body.token || !body.requerimientoFieldId) {
+        return json(res, 400, { error: 'Faltan locationId, token o requerimientoFieldId.' });
+      }
+      agente.ghlConfig = {
+        locationId: body.locationId.trim(),
+        token: body.token.trim(),
+        requerimientoFieldId: body.requerimientoFieldId.trim(),
+      };
+      guardarAgentes(lista);
+      return json(res, 200, { ok: true });
+    }
+    if (mGhlConectar && req.method === 'DELETE') {
+      const [, id] = mGhlConectar;
+      const lista = leerAgentes();
+      const agente = lista.find((a) => a.id === id);
+      if (!agente) return json(res, 404, { error: 'No existe ese agente.' });
+      delete agente.ghlConfig;
+      guardarAgentes(lista);
+      return json(res, 200, { ok: true });
     }
 
     const mAgente = url.pathname.match(/^\/api\/admin\/agentes\/([^/]+)\/(activar|revocar)$/);
@@ -1371,6 +1975,35 @@ async function manejarRequest(req, res) {
       agente.activo = accion === 'activar';
       guardarAgentes(lista);
       return json(res, 200, { ok: true, activo: agente.activo });
+    }
+
+    // Alertas de match de TODOS los agentes juntas (para el panel de José
+    // Luis) — cada agente ve las suyas por separado vía GET /api/alertas.
+    if (url.pathname === '/api/admin/alertas' && req.method === 'GET') {
+      let archivos = [];
+      try {
+        archivos = fs.readdirSync(DATA_DIR).filter((f) => /^alertas-.+\.json$/.test(f));
+      } catch {}
+      const todas = [];
+      for (const archivo of archivos) {
+        const agenteId = archivo.replace(/^alertas-/, '').replace(/\.json$/, '');
+        let lista = [];
+        try {
+          lista = JSON.parse(fs.readFileSync(path.join(DATA_DIR, archivo), 'utf8'));
+        } catch {}
+        for (const a of lista) todas.push({ ...a, agenteId });
+      }
+      todas.sort((a, b) => new Date(b.creado) - new Date(a.creado));
+      return json(res, 200, todas);
+    }
+
+    // Marcar una alerta como leída desde el panel admin (que no tiene la
+    // apiKey del agente dueño de la alerta — solo X-Admin-Key).
+    const mAlerta = url.pathname.match(/^\/api\/admin\/alertas\/([^/]+)\/([^/]+)\/leida$/);
+    if (mAlerta && req.method === 'POST') {
+      const [, agenteIdAlerta, id] = mAlerta;
+      const ok = marcarAlertaLeida(agenteIdAlerta, id);
+      return json(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'No existe esa alerta' });
     }
 
     if (url.pathname === '/api/admin/visitas' && req.method === 'GET') {
@@ -1387,6 +2020,14 @@ async function manejarRequest(req, res) {
       if (sincronizandoMobiliario) return json(res, 200, { ok: true, motivo: 'Ya estaba sincronizando.' });
       sincronizarMobiliario().catch((e) => console.error('Error sincronizando Mobiliario App:', e));
       return json(res, 200, { ok: true });
+    }
+
+    // Fuerza la sincronización de requerimientos de GHL ahora mismo, sin
+    // esperar la hora de la sincronización automática.
+    if (url.pathname === '/api/admin/ghl-resincronizar' && req.method === 'POST') {
+      if (sincronizandoRequerimientosGHL) return json(res, 200, { ok: true, motivo: 'Ya estaba sincronizando.' });
+      sincronizarRequerimientosGHL().catch((e) => console.error('Error sincronizando requerimientos de GHL:', e));
+      return json(res, 200, { ok: true, locations: leerLocationsGHL().length });
     }
 
     return json(res, 404, { error: 'Ruta de administración no encontrada.' });
@@ -1414,6 +2055,48 @@ async function manejarRequest(req, res) {
     guardarRequerimientos(lista, agenteId);
     return json(res, 200, nuevo);
   }
+  // Registro de "propiedades ya enviadas" por requerimiento — para que el
+  // agente vea de un vistazo qué le mandó a cada lead y no le repita lo
+  // mismo. Se identifica cada propiedad por su `link` (único por aviso en
+  // las 4 fuentes). Vive embebido en el propio requerimiento (r.enviados),
+  // no en un archivo aparte.
+  // OJO: este bloque va ANTES de los handlers genéricos PUT/DELETE de abajo
+  // (que usan startsWith + .pop() sobre /api/requerimientos/) porque si no
+  // esos interceptan primero cualquier sub-path como .../enviados.
+  const mEnviados = url.pathname.match(/^\/api\/requerimientos\/([^/]+)\/enviados$/);
+  if (mEnviados && req.method === 'POST') {
+    const [, id] = mEnviados;
+    const body = await leerBody(req);
+    if (!body.link) return json(res, 400, { error: 'Falta el link de la propiedad.' });
+    const lista = leerRequerimientos(agenteId);
+    const idx = lista.findIndex((r) => r.id === id);
+    if (idx === -1) return json(res, 404, { error: 'No existe ese requerimiento' });
+    const enviados = lista[idx].enviados || [];
+    if (!enviados.some((e) => e.link === body.link)) {
+      enviados.push({
+        link: body.link,
+        fuente: body.fuente || '',
+        titulo: body.titulo || '(sin título)',
+        precio: body.precio ?? null,
+        zona: body.zona || '',
+        fecha: new Date().toISOString(),
+      });
+    }
+    lista[idx] = { ...lista[idx], enviados };
+    guardarRequerimientos(lista, agenteId);
+    return json(res, 200, lista[idx]);
+  }
+  if (mEnviados && req.method === 'DELETE') {
+    const [, id] = mEnviados;
+    const body = await leerBody(req);
+    const lista = leerRequerimientos(agenteId);
+    const idx = lista.findIndex((r) => r.id === id);
+    if (idx === -1) return json(res, 404, { error: 'No existe ese requerimiento' });
+    lista[idx] = { ...lista[idx], enviados: (lista[idx].enviados || []).filter((e) => e.link !== body.link) };
+    guardarRequerimientos(lista, agenteId);
+    return json(res, 200, lista[idx]);
+  }
+
   if (url.pathname.startsWith('/api/requerimientos/') && req.method === 'PUT') {
     const id = url.pathname.split('/').pop();
     const body = await leerBody(req);
@@ -1429,6 +2112,68 @@ async function manejarRequest(req, res) {
     const id = url.pathname.split('/').pop();
     guardarRequerimientos(leerRequerimientos(agenteId).filter((r) => r.id !== id), agenteId);
     return json(res, 200, { ok: true });
+  }
+
+  // Carga manual de una propiedad nueva (ej. desde la Ficha Técnica) — corre
+  // matcheaPropiedad contra los requerimientos guardados del agente (mismo
+  // tipo+operación) y genera una alerta por cada match encontrado.
+  if (url.pathname === '/api/propiedades' && req.method === 'POST') {
+    const body = await leerBody(req);
+    const propiedad = {
+      fuente: 'manual',
+      titulo: (body.titulo || '(sin título)').trim(),
+      precio: parsePrecio(body.precio),
+      dormitorios: body.dormitorios ? Number(body.dormitorios) : null,
+      banos: body.banos ? Number(body.banos) : null,
+      m2Terreno: body.m2Terreno ? Number(body.m2Terreno) : null,
+      m2Construccion: body.m2Construccion ? Number(body.m2Construccion) : null,
+      zona: (body.zona || '').trim(),
+      direccion: (body.direccion || '').trim(),
+      descripcion: (body.descripcion || '').trim(),
+      fecha: body.fecha || new Date().toISOString(),
+      tipo: TIPOS.has(body.tipo) ? body.tipo : 'casa',
+      operacion: body.operacion === 'alquiler' ? 'alquiler' : 'venta',
+    };
+
+    // Solo tiene sentido comparar contra requerimientos del mismo tipo y
+    // operación — buscarTodo logra esto pidiéndole ese filtro a cada fuente;
+    // acá lo hacemos a mano ya que la propiedad no viene de una búsqueda.
+    const candidatos = leerRequerimientos(agenteId).filter(
+      (r) => r.tipo === propiedad.tipo && r.operacion === propiedad.operacion
+    );
+    const matches = candidatos.filter((r) => matcheaPropiedad({ ...propiedad }, r));
+
+    const alertas = matches.map((r) =>
+      guardarAlerta(agenteId, {
+        origen: 'manual',
+        propiedad: {
+          titulo: propiedad.titulo,
+          precio: propiedad.precio,
+          zona: propiedad.zona,
+          tipo: propiedad.tipo,
+          operacion: propiedad.operacion,
+        },
+        requerimiento: {
+          id: r.id,
+          cliente: r.cliente,
+          telefono: r.telefono,
+          zona: r.zona,
+          precioMin: r.precioMin,
+          precioMax: r.precioMax,
+        },
+      })
+    );
+
+    return json(res, 200, { propiedad, matches: matches.length, alertas });
+  }
+
+  if (url.pathname === '/api/alertas' && req.method === 'GET') {
+    return json(res, 200, leerAlertas(agenteId));
+  }
+  if (url.pathname.startsWith('/api/alertas/') && url.pathname.endsWith('/leida') && req.method === 'POST') {
+    const id = url.pathname.split('/')[3];
+    const ok = marcarAlertaLeida(agenteId, id);
+    return json(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'No existe esa alerta' });
   }
 
   // Estado de la IA (para que la interfaz sepa si mostrar los botones)
@@ -1451,6 +2196,11 @@ async function manejarRequest(req, res) {
       ultimoError: cache.ultimoError,
       cantidad: Object.values(cache.listados || {}).filter((v) => v.item).length,
     });
+  }
+
+  // Estado de la sincronización de requerimientos de GHL
+  if (url.pathname === '/api/ghl-sync-estado' && req.method === 'GET') {
+    return json(res, 200, { ...leerEstadoGHL(), locationsConfiguradas: leerLocationsGHL().length });
   }
 
   // Interpretar el pedido del cliente con IA (con fallback: la interfaz usa su
@@ -1480,7 +2230,7 @@ async function manejarRequest(req, res) {
       }
       if (iaDisponible() && params.acm === '1') {
         try {
-          resultado.analisisMercadoIA = await generarACM(params, resultado.listados, resultado.analisisMercado);
+          resultado.analisisMercadoIA = await generarACM(params, resultado.analisisMercado);
         } catch (e) {
           resultado.analisisMercadoIA = null;
         }
@@ -1557,4 +2307,9 @@ server.listen(PORT, () => {
   // siempre después de las primeras horas. Ahora se revisa cada hora
   // mientras el proceso esté vivo, sin importar cuánto tiempo lleve arriba.
   setInterval(chequearResyncMobiliario, 60 * 60 * 1000);
+
+  // Mismo patrón para los requerimientos de GHL — no hace nada si
+  // GHL_LOCATIONS no está configurado (ver leerLocationsGHL).
+  chequearResyncRequerimientosGHL();
+  setInterval(chequearResyncRequerimientosGHL, 60 * 60 * 1000);
 });
