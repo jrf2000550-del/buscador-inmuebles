@@ -430,12 +430,42 @@ sería un camino legítimo si en algún momento interesa.
   rango exacto pero dentro del margen (en vez de perderlo).
 - Cada portal se consulta en paralelo; si uno falla, el otro igual responde.
 
+## Alertas automáticas de match (2026-07-25)
+
+Cuando aparece una propiedad nueva, la app avisa sola qué requerimientos guardados le sirven —
+sin que el agente tenga que revisar mensajes de WhatsApp a mano.
+
+- **Requerimientos unificados**: además de los que carga el agente en el formulario, la app
+  puede traer los que el bot de IA de GHL guarda solo (custom field "Requerimiento") de la
+  subcuenta de cada cliente. **Cada agente tiene su propia conexión de GHL**, aislada de los
+  demás — José Luis la carga una vez desde `/admin.html` (tabla de agentes → botón "Conectar
+  GHL": Location ID + Private Integration Token + id del campo Requerimiento), sin tocar
+  Railway ni el código. `GHL_LOCATIONS` (variable de entorno) sigue funcionando como fuente
+  extra/de respaldo, por si en algún momento hace falta cargar una a mano fuera del panel — si
+  un mismo agente aparece en los dos lados, gana la del panel. Se sincroniza sola cada hora;
+  sin ninguna de las dos fuentes configuradas, esta parte simplemente no hace nada.
+- **`POST /api/propiedades`**: carga manual de una propiedad nueva (pensada para la Ficha
+  Técnica de Sofymar IA) — compara al toque contra los requerimientos guardados y devuelve los
+  matches.
+- **Detección automática en Mobiliario App**: cuando la sincronización de esa fuente (la única
+  con caché histórica) encuentra una propiedad genuinamente nueva, la compara sola contra los
+  requerimientos de todos los agentes.
+- **Panel `/admin.html`**: sección "Alertas de match" — lista cada alerta con la propiedad, el
+  requerimiento que matcheó y de dónde salió (GHL, manual o Mobiliario), con botón para marcar
+  como leída.
+- **Todavía no manda WhatsApp automático** — a propósito, hasta validar con datos reales que el
+  parseo del texto libre de GHL ("Tipo: X | Zona: Y | Presupuesto: Z") no genera matches
+  ruidosos. Fase 2 pendiente: reusar el envío de WhatsApp de GHL para avisarle al asesor
+  directo en vez de depender de mirar el panel.
+
 ## Mejoras pendientes
 
 - BienInmuebles: capturar su endpoint AJAX para lectura real.
 - Más páginas de C21/RE/MAX si hacen falta más resultados por zona.
-- Alertas automáticas cuando aparezca una propiedad nueva que coincida con un
-  requerimiento guardado.
+- Alertas automáticas por WhatsApp (fase 2 de la sección de arriba), una vez validado el
+  matching con datos reales.
+- Detección de "propiedad nueva" también para C21/RE-MAX/BienInmuebles (hoy solo Mobiliario App
+  tiene caché histórica) — requeriría darles el mismo patrón de caché persistente.
 - Marcar propiedades como "enviada al cliente" / "descartada".
 - Panel para crear/revocar claves de agentes desde la web (hoy es por CLI,
   `scripts/agentes.js`, para no exponer esa acción como endpoint público).

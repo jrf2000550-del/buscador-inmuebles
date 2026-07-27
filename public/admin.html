@@ -70,7 +70,16 @@
   .badge { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
   .badge.activo { background: var(--ok-soft); color: #86efac; }
   .badge.revocado { background: var(--danger-soft); color: #ffb4b4; }
+  .badge.nueva { background: var(--warn-soft); color: var(--warn); }
+  .badge.origen { background: var(--panel-3); color: var(--muted); text-transform: capitalize; }
   .vacio { color: var(--muted); text-align: center; padding: 30px; font-size: 13px; }
+
+  .alerta { background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); padding: 14px 16px; display: grid; gap: 6px; }
+  .alerta + .alerta { margin-top: 10px; }
+  .alerta .fila1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .alerta .titulo { font-weight: 700; font-size: 13.5px; }
+  .alerta .detalle { color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+  .alerta .acciones { margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -105,6 +114,23 @@
       <div id="tablaAgentes"></div>
     </div>
     <div class="panel">
+      <h2>Alertas de match <span id="badgeAlertas" class="badge nueva" style="display:none; margin-left:4px"></span></h2>
+      <p style="color:var(--muted); font-size:13px; margin:0 0 12px">
+        Se generan solas cuando una propiedad nueva (cargada a mano o detectada en Mobiliario App)
+        matchea un requerimiento guardado (de GHL o del formulario) — de cualquier agente.
+      </p>
+      <div id="listaAlertas"></div>
+    </div>
+    <div class="panel">
+      <h2>Requerimientos de GHL</h2>
+      <p style="color:var(--muted); font-size:13px; margin:0 0 12px">
+        Trae los leads que el bot de WhatsApp marcó con "Requerimiento" en cada cuenta de GHL
+        configurada (ver <code>GHL_LOCATIONS</code>). Se sincroniza sola cada hora.
+      </p>
+      <button type="button" class="chico" id="btnResyncGHL">Forzar sincronización ahora</button>
+      <p id="resyncEstadoGHL" style="color:var(--muted); font-size:12px; margin:10px 0 0"></p>
+    </div>
+    <div class="panel">
       <h2>Mobiliario App</h2>
       <p style="color:var(--muted); font-size:13px; margin:0 0 12px">
         Se sincroniza sola en segundo plano cada 20 horas. Usá este botón si acabás de corregir algo en el código
@@ -134,7 +160,7 @@ async function entrar() {
   }
   $('#gate').style.display = 'none';
   $('#app').style.display = 'block';
-  await Promise.all([cargarVisitas(), cargarAgentes()]);
+  await Promise.all([cargarVisitas(), cargarAgentes(), cargarAlertas()]);
   return true;
 }
 
@@ -170,7 +196,7 @@ async function cargarAgentes() {
   }
   $('#tablaAgentes').innerHTML = `
     <table>
-      <thead><tr><th>Nombre</th><th>Email</th><th>Origen</th><th>Registrado</th><th>Requerimientos</th><th>Estado</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>Email</th><th>Origen</th><th>Registrado</th><th>Requerimientos</th><th>Estado</th><th>GHL</th><th></th></tr></thead>
       <tbody>
         ${agentes.map((a) => `
           <tr>
@@ -180,12 +206,71 @@ async function cargarAgentes() {
             <td>${new Date(a.creado).toLocaleDateString('es-BO', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
             <td>${a.cantidadRequerimientos}</td>
             <td><span class="badge ${a.activo ? 'activo' : 'revocado'}">${a.activo ? 'Activo' : 'Revocado'}</span></td>
-            <td><button type="button" class="chico ${a.activo ? 'fantasma' : ''}" onclick="toggleAgente('${a.id}', ${a.activo})">${a.activo ? 'Revocar' : 'Reactivar'}</button></td>
+            <td>${a.ghlConectado ? `<span class="badge activo" title="${a.ghlLocationId}">Conectado</span>` : '<span class="badge revocado">Sin conectar</span>'}</td>
+            <td style="white-space:nowrap">
+              <button type="button" class="chico ${a.activo ? 'fantasma' : ''}" onclick="toggleAgente('${a.id}', ${a.activo})">${a.activo ? 'Revocar' : 'Reactivar'}</button>
+              <button type="button" class="chico fantasma" onclick="abrirFormGHL('${a.id}', '${a.nombre.replace(/'/g, "\\'")}')">${a.ghlConectado ? 'Editar GHL' : 'Conectar GHL'}</button>
+            </td>
           </tr>
         `).join('')}
       </tbody>
     </table>
+    <div id="formGHL" style="display:none; margin-top:16px; padding-top:16px; border-top:1px solid var(--border-soft)">
+      <p style="font-weight:700; font-size:13.5px; margin:0 0 10px" id="formGHLTitulo"></p>
+      <div style="display:grid; gap:10px; max-width:420px">
+        <label>Location ID <input id="ghlLocationId" placeholder="c2e5fSjLYJRVGbLREgps"></label>
+        <label>Private Integration Token <input id="ghlToken" type="password" placeholder="pit-..."></label>
+        <label>ID del custom field "Requerimiento" <input id="ghlFieldId" placeholder="se consigue con GET /locations/{id}/customFields"></label>
+        <div style="display:flex; gap:8px">
+          <button type="button" class="chico" onclick="guardarGHL()">Guardar</button>
+          <button type="button" class="chico fantasma" onclick="cerrarFormGHL()">Cancelar</button>
+        </div>
+        <p id="ghlFormError" class="error"></p>
+      </div>
+    </div>
   `;
+}
+
+let agenteGHLActual = null;
+
+function abrirFormGHL(agenteId, nombre) {
+  agenteGHLActual = agenteId;
+  $('#formGHLTitulo').textContent = 'Conectar GHL — ' + nombre;
+  $('#ghlLocationId').value = '';
+  $('#ghlToken').value = '';
+  $('#ghlFieldId').value = '';
+  $('#ghlFormError').classList.remove('visible');
+  $('#formGHL').style.display = 'block';
+  $('#formGHL').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function cerrarFormGHL() {
+  $('#formGHL').style.display = 'none';
+  agenteGHLActual = null;
+}
+
+async function guardarGHL() {
+  const locationId = $('#ghlLocationId').value.trim();
+  const token = $('#ghlToken').value.trim();
+  const requerimientoFieldId = $('#ghlFieldId').value.trim();
+  if (!locationId || !token || !requerimientoFieldId) {
+    $('#ghlFormError').textContent = 'Completá los 3 campos.';
+    $('#ghlFormError').classList.add('visible');
+    return;
+  }
+  const resp = await adminFetch(`/api/admin/agentes/${agenteGHLActual}/ghl`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ locationId, token, requerimientoFieldId }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    $('#ghlFormError').textContent = err.error || 'No se pudo guardar.';
+    $('#ghlFormError').classList.add('visible');
+    return;
+  }
+  cerrarFormGHL();
+  cargarAgentes();
 }
 
 async function toggleAgente(id, estaActivo) {
@@ -193,6 +278,61 @@ async function toggleAgente(id, estaActivo) {
   await adminFetch(`/api/admin/agentes/${id}/${accion}`, { method: 'POST' });
   cargarAgentes();
 }
+
+function formatoPrecio(n) {
+  return n == null || n === '' ? '—' : '$' + Number(n).toLocaleString('es-BO');
+}
+
+async function cargarAlertas() {
+  const alertas = await (await adminFetch('/api/admin/alertas')).json();
+  const noLeidas = alertas.filter((a) => !a.leida).length;
+  const badge = $('#badgeAlertas');
+  if (noLeidas) {
+    badge.style.display = 'inline-block';
+    badge.textContent = noLeidas + ' sin leer';
+  } else {
+    badge.style.display = 'none';
+  }
+  if (!alertas.length) {
+    $('#listaAlertas').innerHTML = '<p class="vacio">Todavía no hay alertas — van a aparecer solas cuando una propiedad nueva matchee un requerimiento guardado.</p>';
+    return;
+  }
+  $('#listaAlertas').innerHTML = alertas.map((a) => `
+    <div class="alerta" style="${a.leida ? 'opacity:.55' : ''}">
+      <div class="fila1">
+        <span class="titulo">${a.propiedad?.titulo || '(sin título)'}</span>
+        <span class="badge origen">${a.origen || '—'}</span>
+        <span class="badge origen">agente: ${a.agenteId}</span>
+        ${a.leida ? '' : '<span class="badge nueva">nueva</span>'}
+      </div>
+      <div class="detalle">
+        Propiedad: ${formatoPrecio(a.propiedad?.precio)} · ${a.propiedad?.zona || '—'}
+      </div>
+      <div class="detalle">
+        Matchea el requerimiento de <b>${a.requerimiento?.cliente || 'Sin nombre'}</b>
+        ${a.requerimiento?.telefono ? ' (' + a.requerimiento.telefono + ')' : ''}
+        — busca en ${a.requerimiento?.zona || 'cualquier zona'},
+        hasta ${formatoPrecio(a.requerimiento?.precioMax)}
+      </div>
+      <div class="detalle" style="color:var(--muted-2)">${new Date(a.creado).toLocaleString('es-BO')}</div>
+      ${a.leida ? '' : `<div class="acciones"><button type="button" class="chico fantasma" onclick="marcarAlertaLeida('${a.agenteId}', '${a.id}')">Marcar como leída</button></div>`}
+    </div>
+  `).join('');
+}
+
+async function marcarAlertaLeida(agenteId, id) {
+  await adminFetch(`/api/admin/alertas/${agenteId}/${id}/leida`, { method: 'POST' });
+  cargarAlertas();
+}
+
+$('#btnResyncGHL').addEventListener('click', async () => {
+  $('#resyncEstadoGHL').textContent = 'Sincronizando…';
+  const resp = await (await adminFetch('/api/admin/ghl-resincronizar', { method: 'POST' })).json();
+  $('#resyncEstadoGHL').textContent = resp.locations
+    ? `Sincronizando ${resp.locations} location(s) configurada(s) en segundo plano…`
+    : (resp.motivo || 'No hay locations configuradas en GHL_LOCATIONS todavía.');
+  setTimeout(cargarAlertas, 4000);
+});
 
 $('#btnResyncMobiliario').addEventListener('click', async () => {
   $('#resyncEstado').textContent = 'Arrancando…';
