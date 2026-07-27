@@ -220,6 +220,7 @@
   #btnMapa:hover, #btnACM:hover { border-color: var(--info); filter: none; transform: none; box-shadow: var(--shadow-sm); }
   #mapaWrap { margin-bottom: 20px; margin-top: 10px; }
   #mapa { height: 420px; border-radius: var(--radius); border: 1px solid var(--border-soft); background: var(--panel); box-shadow: var(--shadow); }
+  #mapaComparables { height: 320px; border-radius: var(--radius); border: 1px solid var(--border-soft); background: var(--panel); box-shadow: var(--shadow); margin-top: 10px; }
 
   .badge-nivel { display: inline-block; font-size: 11px; font-weight: 800; padding: 2px 9px; border-radius: 999px; margin-right: 4px; }
   .badge-a { background: var(--ok-soft); color: #86efac; }
@@ -516,6 +517,26 @@
   </aside>
 
   <section class="resultados">
+    <div class="dictado acm-rapido">
+      <h2 style="margin:0">ACM rápido</h2>
+      <p class="sub" style="margin:0">Para una propiedad real, sin cliente ni requerimiento guardado — describí tipo, zona y tamaño aproximado, o cargalos directo abajo.</p>
+      <textarea id="acmRapidoTexto" rows="2" placeholder="Ej: 'terreno de 300 m2 en Equipetrol' o 'casa de 250 metros construidos en Urubó'"></textarea>
+      <button type="button" id="btnInterpretarRapido">Interpretar</button>
+      <div class="manuales-form">
+        <select id="acmRapidoTipo">
+          <option value="casa">Casa</option>
+          <option value="departamento">Departamento</option>
+          <option value="terreno">Terreno</option>
+          <option value="local">Local comercial</option>
+          <option value="oficina">Oficina</option>
+        </select>
+        <input type="text" id="acmRapidoZona" placeholder="Zona (ej: Equipetrol)">
+        <input type="number" id="acmRapidoM2" placeholder="m² aproximado">
+        <button type="button" id="btnGenerarAcmRapido">Generar ACM</button>
+      </div>
+      <p id="acmRapidoMsg" class="sub" style="margin:0"></p>
+    </div>
+
     <h2 id="tituloRes">Resultados</h2>
     <p class="sub" id="subRes">Guardá un requerimiento o tocá "Buscar" en uno existente.</p>
     <div class="links" id="linksExt"></div>
@@ -787,6 +808,7 @@ function renderAcm(stats, ia) {
   const detalle = stats.comparablesDetalle || [];
   const conteo = { A: 0, B: 0, C: 0 };
   detalle.forEach((c) => { conteo[c.nivel] = (conteo[c.nivel] || 0) + 1; });
+  const fechaGenerado = new Date().toLocaleDateString('es-BO', { day: 'numeric', month: 'long', year: 'numeric' });
 
   $('#acmWrap').innerHTML = `
     <div class="acm-reporte">
@@ -809,9 +831,58 @@ function renderAcm(stats, ia) {
         : IA_ACTIVA
           ? '<p class="acm-cargando">Generando análisis con IA…</p>'
           : '<p class="sub" style="margin:0">Activá la IA para un análisis con recomendación redactada — por ahora se muestran solo las estadísticas.</p>'}
+      <p class="sub" style="margin:10px 0 4px" id="mapaComparablesInfo"></p>
+      <div id="mapaComparables"></div>
+      <p class="acm-disclaimer" style="border-top:none; padding-top:0; margin-top:12px">Generado el ${fechaGenerado} — válido por 30 días.</p>
       <p class="acm-disclaimer">Este análisis refleja avisos activos en portales rastreados (Century 21, RE/MAX, BienInmuebles, Mobiliario App) a la fecha de hoy. No captura acuerdos privados, referidos entre agentes, ni avisos con errores de carga o categorización del propio anunciante.</p>
     </div>
   `;
+  setTimeout(() => mostrarMapaComparables(detalle), 0); // el div recién existe tras el innerHTML de arriba
+}
+
+// ---------- Mapa de comparables del ACM (coloreado por nivel A/B/C) ----------
+// Separado del mapa de resultados (#mapa/mapaLeaflet): ese vive fuera del
+// template que renderAcm regenera en cada corrida, este necesita
+// reinicializarse con cada reporte nuevo.
+let mapaComparablesLeaflet = null;
+
+function mostrarMapaComparables(detalle) {
+  const conCoords = (detalle || []).filter((c) => c.lat && c.lon);
+  $('#mapaComparablesInfo').textContent = conCoords.length
+    ? (conCoords.length < detalle.length
+        ? `${conCoords.length} de ${detalle.length} comparables tienen ubicación exacta en el mapa.`
+        : `${conCoords.length} comparable(s) en el mapa.`)
+    : 'Ninguno de estos comparables trae coordenadas exactas.';
+  if (mapaComparablesLeaflet) { mapaComparablesLeaflet.remove(); mapaComparablesLeaflet = null; }
+  if (!conCoords.length || typeof L === 'undefined') return;
+
+  mapaComparablesLeaflet = L.map('mapaComparables').setView([conCoords[0].lat, conCoords[0].lon], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>',
+    maxZoom: 19,
+  }).addTo(mapaComparablesLeaflet);
+
+  const COLOR_NIVEL = { A: '#86efac', B: '#fde6a8', C: '#ffb4b4' }; // mismos tokens que .badge-a/b/c
+  const bounds = [];
+  for (const c of conCoords) {
+    const color = COLOR_NIVEL[c.nivel] || COLOR_NIVEL.B;
+    const marker = L.circleMarker([c.lat, c.lon], {
+      radius: c.esOutlier ? 10 : 7,
+      color: c.esOutlier ? '#fff' : color,
+      weight: c.esOutlier ? 3 : 1.5,
+      dashArray: c.esOutlier ? '3,3' : null,
+      fillColor: color,
+      fillOpacity: c.esOutlier ? 0.5 : 0.85,
+    }).addTo(mapaComparablesLeaflet);
+    const precioTxt = c.precio ? 'U$S ' + c.precio.toLocaleString('es-BO') : 'Consultar precio';
+    marker.bindPopup(
+      `<div class="popup-mapa"><div class="precio">${precioTxt}${c.precioM2 ? ' · U$S ' + c.precioM2.toLocaleString('es-BO') + '/m²' : ''}</div>` +
+      `${c.titulo || ''}<br>Nivel ${c.nivel}${c.esOutlier ? ' · outlier' : ''}<br>` +
+      `<a href="${c.link}" target="_blank">Ver en ${c.fuente} ↗</a></div>`
+    );
+    bounds.push([c.lat, c.lon]);
+  }
+  if (bounds.length > 1) mapaComparablesLeaflet.fitBounds(bounds, { padding: [30, 30] });
 }
 
 // ---------- Comparables manuales (cierres reales u otra referencia) ----------
@@ -893,6 +964,101 @@ $('#btnACM').addEventListener('click', async () => {
     renderAcm(data.analisisMercado || ultimosAnalisisMercado, data.analisisMercadoIA);
   } catch {
     renderAcm(ultimosAnalisisMercado, null);
+  }
+});
+
+// ---------- ACM rápido ----------
+// Camino corto en paralelo a "Nuevo requerimiento": para una propiedad real
+// que trajeron (no un cliente), sin guardar nada — no crea un requerimiento,
+// no aparece en "Requerimientos guardados". Pega directo a /api/buscar?acm=1
+// con tipo/zona/m² aproximado y reusa el mismo renderAcm/comparables
+// manuales que ya funciona para el flujo normal, sin tocar esa parte.
+
+// Reusa /api/interpretar TAL CUAL existe (devuelve los 16 campos del
+// formulario completo de cliente) y se queda solo con tipo/zona/m² —
+// simplificación deliberada para no tener que diseñar un prompt/schema
+// nuevo. Si "ACM rápido" termina usándose mucho, en algún momento conviene
+// un endpoint de interpretación más chico y dedicado en vez de reusar el de
+// 16 campos (desperdicia tokens pidiendo cliente/precio/dormitorios/etc.
+// que acá se descartan).
+$('#btnInterpretarRapido').addEventListener('click', async () => {
+  const texto = $('#acmRapidoTexto').value.trim();
+  if (!texto) return;
+  $('#acmRapidoMsg').textContent = 'Interpretando…';
+  if (!IA_ACTIVA) {
+    $('#acmRapidoMsg').textContent = 'Sin IA activa — completá tipo/zona/m² a mano abajo.';
+    return;
+  }
+  try {
+    const r = await (await apiFetch('/api/interpretar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ texto }),
+    })).json();
+    if (!r.disponible || !r.campos) {
+      $('#acmRapidoMsg').textContent = 'No se pudo interpretar — completá tipo/zona/m² a mano abajo.';
+      return;
+    }
+    const c = r.campos;
+    $('#acmRapidoTipo').value = c.tipo || 'casa';
+    $('#acmRapidoZona').value = c.zona || '';
+    // Un solo m² aproximado, no un rango: el intérprete siempre devuelve
+    // min/max (pensado para rangos de búsqueda de cliente) — acá se
+    // promedia si vienen los dos, o se toma el que haya.
+    const esTerreno = (c.tipo || 'casa') === 'terreno';
+    const min = parseFloat(esTerreno ? c.m2TerrenoMin : c.m2ConstruccionMin) || null;
+    const max = parseFloat(esTerreno ? c.m2TerrenoMax : c.m2ConstruccionMax) || null;
+    const aprox = min != null && max != null ? Math.round((min + max) / 2) : min ?? max ?? '';
+    $('#acmRapidoM2').value = aprox;
+    $('#acmRapidoMsg').textContent = 'Revisá los campos y tocá "Generar ACM".';
+  } catch {
+    $('#acmRapidoMsg').textContent = 'Error al interpretar — completá tipo/zona/m² a mano abajo.';
+  }
+});
+
+$('#btnGenerarAcmRapido').addEventListener('click', async () => {
+  const tipo = $('#acmRapidoTipo').value;
+  const zona = $('#acmRapidoZona').value.trim();
+  const m2 = parseFloat($('#acmRapidoM2').value);
+  if (!m2 || m2 <= 0) {
+    $('#acmRapidoMsg').textContent = 'Ingresá un m² aproximado mayor a 0.';
+    return;
+  }
+  $('#acmRapidoMsg').textContent = 'Generando…';
+
+  // El m² aproximado se ensancha ±20% acá (no se manda tal cual) porque
+  // m2TerrenoMin/Max cumplen doble función en el backend: alimentan el
+  // "sujeto" para ponderar Y son el filtro duro de búsqueda — un solo valor
+  // exacto sería un filtro demasiado angosto (casi ningún aviso real cae
+  // justo en un m² exacto).
+  const campoMin = tipo === 'terreno' ? 'm2TerrenoMin' : 'm2ConstruccionMin';
+  const campoMax = tipo === 'terreno' ? 'm2TerrenoMax' : 'm2ConstruccionMax';
+  const params = new URLSearchParams({ operacion: 'venta', tipo }); // operacion fija a venta — mismo criterio de alcance reducido que el m², no viene del intérprete
+  if (zona) params.set('zona', zona);
+  params.set(campoMin, String(Math.round(m2 * 0.8)));
+  params.set(campoMax, String(Math.round(m2 * 1.2)));
+
+  ultimosParamsBusqueda = params;
+  const acmParams = new URLSearchParams(params);
+  acmParams.set('acm', '1');
+  try {
+    const data = await (await apiFetch('/api/buscar?' + acmParams)).json();
+    ultimosAnalisisMercado = data.analisisMercado || null;
+    if (!ultimosAnalisisMercado) {
+      $('#acmRapidoMsg').textContent = 'No hay suficientes comparables para ese tipo/zona/tamaño.';
+      $('#acmWrap').style.display = 'none';
+      $('#manualesWrap').style.display = 'none';
+      return;
+    }
+    $('#acmRapidoMsg').textContent = '';
+    $('#btnACM').style.display = 'inline-flex';
+    $('#btnACMTxt').textContent = 'Ocultar ACM';
+    $('#acmWrap').style.display = 'block';
+    $('#manualesWrap').style.display = 'block';
+    renderListaManuales();
+    renderAcm(data.analisisMercado, data.analisisMercadoIA);
+  } catch {
+    $('#acmRapidoMsg').textContent = 'Error al generar el ACM.';
   }
 });
 

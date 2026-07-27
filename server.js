@@ -1461,6 +1461,10 @@ function calcularEstadisticasMercado(items, tipo, sujeto) {
         precioM2: Math.round(c.precioM2),
         peso: Math.round(pesoFinal * 100) / 100,
         esOutlier: c.esOutlier,
+        lat: c.item.lat ?? null,
+        lon: c.item.lon ?? null,
+        titulo: c.item.titulo || null,
+        precio: c.item.precio ?? null,
       });
     }
     precioM2Ponderado = sumaPeso > 0 ? Math.round(sumaPesoPrecio / sumaPeso) : precioM2Mediana;
