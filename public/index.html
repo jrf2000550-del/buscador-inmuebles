@@ -290,6 +290,11 @@
     display: inline-flex; align-items: center; gap: 6px;
   }
   .acciones-card .wa:hover { filter: brightness(1.12); transform: translateY(-1px); }
+  .acciones-card .marcar-enviada {
+    background: transparent; color: var(--muted); border: 1.5px solid var(--border); padding: 6.5px 12px;
+    border-radius: var(--radius-xs); font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: none;
+  }
+  .acciones-card .marcar-enviada:hover { color: var(--text); border-color: var(--muted-2); filter: none; transform: none; box-shadow: none; }
 
   .vacio, .cargando { color: var(--muted); padding: 64px 20px; text-align: center; font-size: 14px; }
   .cargando { color: var(--accent); font-weight: 600; }
@@ -757,6 +762,7 @@ let editandoId = null; // null = creando uno nuevo; si no, id del que se está e
 
 let ultimosListados = [];
 let mapaLeaflet = null;
+let requerimientoActivo = null; // el "r" de la búsqueda en pantalla — para marcar "enviada" sin re-buscar
 
 function mostrarMapa(listados) {
   const conCoords = listados.filter((i) => i.lat && i.lon);
@@ -1062,13 +1068,23 @@ $('#btnGenerarAcmRapido').addEventListener('click', async () => {
   }
 });
 
+// Línea corta para ver de un vistazo, en la lista lateral, qué ya se le
+// mandó a ese lead — sin tener que abrir nada ni volver a buscar.
+function resumenEnviados(r) {
+  const enviados = r.enviados || [];
+  if (!enviados.length) return '';
+  const titulos = enviados.slice(0, 3).map((e) => e.titulo || '(sin título)');
+  const extra = enviados.length > 3 ? ` y ${enviados.length - 3} más` : '';
+  return `<br>📤 ${enviados.length} enviada(s): ${titulos.join(', ')}${extra}`;
+}
+
 async function cargarRequerimientos() {
   const lista = await (await apiFetch('/api/requerimientos')).json();
   $('#listaReq').innerHTML = lista.length
     ? lista.map((r) => `
       <div class="req${r.id === editandoId ? ' editando' : ''}">
         <div class="nombre">${r.cliente}</div>
-        <div class="detalle">${describir(r)}${r.notas ? '<br>' + r.notas : ''}</div>
+        <div class="detalle">${describir(r)}${r.notas ? '<br>' + r.notas : ''}${resumenEnviados(r)}</div>
         <div class="acciones">
           <button onclick='buscar(${JSON.stringify(r)})'>Buscar</button>
           <button class="editar" onclick='editarRequerimiento(${JSON.stringify(r)})'>Editar</button>
@@ -1115,6 +1131,7 @@ function cancelarEdicion() {
 $('#btnCancelarEdicion').addEventListener('click', cancelarEdicion);
 
 async function buscar(r) {
+  requerimientoActivo = r;
   $('#tituloRes').textContent = 'Resultados para ' + r.cliente;
   $('#subRes').textContent = describir(r);
   $('#linksExt').innerHTML = '';
@@ -1193,8 +1210,9 @@ async function buscar(r) {
   $('#manualesWrap').style.display = hayAcm ? 'block' : 'none';
   if (hayAcm) renderListaManuales();
 
+  const enviadosActivos = (r.enviados || []).map((e) => e.link);
   $('#zona-resultados').innerHTML = nota + '<div class="grid">' + data.listados.map((i) => `
-    <div class="card">
+    <div class="card" data-link="${encodeURIComponent(i.link)}">
       ${i.imagen ? `<div class="imgwrap"><img src="${i.imagen}" loading="lazy" alt=""></div>` : ''}
       <div class="cuerpo">
         <div class="fuente ${i.fuente === 'RE/MAX' ? 'remax' : i.fuente === 'BienInmuebles' ? 'bien' : i.fuente === 'Mobiliario App' ? 'mobiliario' : 'c21'}">${i.fuente}${i.oficina ? ' · ' + i.oficina : ''}</div>
@@ -1215,9 +1233,33 @@ async function buscar(r) {
             ? `<a class="wa" href="https://wa.me/${i.whatsapp}?text=${encodeURIComponent('Hola ' + (i.asesor || '') + ', vi tu aviso "' + i.titulo + '" y tengo un cliente interesado. ¿Sigue disponible?')}" target="_blank">WhatsApp al captador ↗</a>`
             : ''}
           <a href="${i.link}" target="_blank">Ver en ${i.fuente} ↗</a>
+          ${enviadosActivos.includes(i.link)
+            ? '<span class="badge">✓ Enviada</span>'
+            : `<button type="button" class="marcar-enviada" onclick='marcarEnviada(${JSON.stringify(i)})'>Marcar enviada</button>`}
         </div>
       </div>
     </div>`).join('') + '</div>';
+}
+
+// Marca una propiedad como ya enviada al cliente del requerimiento activo —
+// guarda solo un snapshot liviano (no todo el objeto "i") y actualiza la
+// tarjeta puntual sin volver a buscar contra los portales.
+async function marcarEnviada(i) {
+  if (!requerimientoActivo) return;
+  const snapshot = { link: i.link, fuente: i.fuente, titulo: i.titulo, precio: i.precio ?? null, zona: i.zona || '' };
+  const resp = await apiFetch('/api/requerimientos/' + requerimientoActivo.id + '/enviados', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(snapshot),
+  });
+  const actualizado = await resp.json();
+  requerimientoActivo.enviados = actualizado.enviados || [];
+  const card = document.querySelector(`.card[data-link="${CSS.escape(encodeURIComponent(i.link))}"]`);
+  if (card) {
+    const btn = card.querySelector('.marcar-enviada');
+    if (btn) btn.outerHTML = '<span class="badge">✓ Enviada</span>';
+  }
+  cargarRequerimientos();
 }
 
 $('#btnInterpretar').addEventListener('click', () => {
