@@ -30,8 +30,20 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
 
-const TIPOS = new Set(['casa', 'departamento', 'terreno', 'local', 'oficina']);
-const APLICA_DORMITORIOS = new Set(['casa', 'departamento']);
+const TIPOS = new Set([
+  'casa', 'departamento', 'terreno', 'local', 'oficina',
+  'quinta', 'terreno-comercial', 'edificio', 'deposito', 'tinglado',
+  'rural', 'rancho', 'agricolas', 'ganaderas', 'cochera', 'hotel', 'colegio', 'proyecto',
+]);
+// camposRequerimiento (más abajo) cae en silencio a 'casa' si el tipo
+// recibido no está en este Set — cualquier tipo nuevo que se agregue acá
+// también tiene que sumarse acá, si no queda guardado mal sin avisar.
+const APLICA_DORMITORIOS = new Set(['casa', 'departamento', 'quinta']);
+// Tipos donde lo relevante para comparar precio/m² es el terreno, no la
+// construcción — mismo criterio que ya usaba 'terreno' solo, extendido a los
+// tipos nuevos que también son "tierra" ante todo. 'quinta' queda afuera
+// (se trata como casa: tiene construcción propia, no solo lote).
+const TIPOS_TERRENO = new Set(['terreno', 'terreno-comercial', 'rural', 'rancho', 'agricolas', 'ganaderas']);
 
 // Zonas reales de Santa Cruz de la Sierra, extraídas directo de los avisos de
 // Century 21, RE/MAX y BienInmuebles (no de una lista genérica de internet) —
@@ -375,12 +387,29 @@ async function fetchJson(url) {
 // que daban 404 en silencio, dejando esas dos categorías con 0 resultados
 // de C21 siempre, sin que se notara como error hasta que apareció un
 // requerimiento real de oficina (bug encontrado 2026-07-23).
+// Verificado contra la API en vivo el 2026-07-28: estos 17 slugs (todos en
+// singular) filtran correctamente por tipoPropiedad real en cada caso.
+// 'terreno-comercial' no tiene categoría propia en C21 — queda afuera del
+// mapa a propósito (ver el guard en fetchC21 más abajo, que evita mandar la
+// búsqueda sin filtro de tipo cuando no hay mapeo).
 const C21_TIPO = {
   casa: 'tipo_casa-o-casa-en-condominio',
   departamento: 'tipo_departamento-o-penthouse',
   terreno: 'tipo_terreno',
   local: 'tipo_local',
   oficina: 'tipo_oficinas',
+  quinta: 'tipo_quinta',
+  edificio: 'tipo_edificio',
+  deposito: 'tipo_deposito',
+  tinglado: 'tipo_tinglado',
+  rural: 'tipo_rural',
+  rancho: 'tipo_rancho',
+  agricolas: 'tipo_agricolas',
+  ganaderas: 'tipo_ganaderas',
+  cochera: 'tipo_cochera',
+  hotel: 'tipo_hotel',
+  colegio: 'tipo_colegio',
+  proyecto: 'tipo_proyecto',
 };
 // C21 expone el total real de avisos en `totalHits` (string con puntos de
 // miles, ej. "1.350") — se pagina dinámicamente hasta traerlos todos, en vez
@@ -467,6 +496,11 @@ function normalizarC21(r, operacion) {
 }
 
 async function fetchC21(req) {
+  // Si el tipo pedido no tiene mapeo en C21_TIPO, NO se manda la búsqueda —
+  // urlC21 omitiría el segmento de tipo en silencio y devolvería resultados
+  // de TODOS los tipos sin filtrar (bug real encontrado 2026-07-28 al
+  // agregar 'terreno-comercial', que no tiene categoría propia acá).
+  if (!C21_TIPO[req.tipo]) return [];
   // La primera página NO atrapa el error acá — si falla, buscarTodo debe
   // enterarse (para avisar "C21 no respondió" en vez de mostrar 0 en
   // silencio, como pasaba antes). Las páginas siguientes sí toleran fallos
@@ -492,12 +526,21 @@ async function fetchC21(req) {
 
 // ---------- RE/MAX Bolivia (remax.bo/api/search) ----------
 
+// IDs de subtype_property verificados contra la API en vivo el 2026-07-28
+// (escaneadas 40 páginas reales de Santa Cruz). Corrige un bug preexistente:
+// 'local' incluía el id 55 ("Galpon", no es local comercial — el id real es
+// 8, "Local Comercial", que nunca estaba incluido) y 'oficina' no incluía el
+// id 62 ("Oficina") — solo tenía el genérico 1 ("Comercial/Negocio").
 const RMX_SUB = {
   casa: [161, 42, 228],
   departamento: [131, 174, 140],
   terreno: [101],
-  local: [1, 55],
-  oficina: [1],
+  local: [1, 8],
+  oficina: [1, 62],
+  quinta: [27, 229], // 229 = "Casa de Campo", mismo concepto que quinta
+  'terreno-comercial': [110],
+  edificio: [114, 128, 208],
+  deposito: [55], // "Galpon"
 };
 const RMX_CITY_SC = 4; // Santa Cruz de la Sierra
 // RE/MAX expone `total`/`last_page` (paginación estándar Laravel) — se
@@ -551,6 +594,10 @@ function normalizarRemax(r) {
 }
 
 async function fetchRemax(req, minUsd, maxUsd) {
+  // Mismo motivo que el guard de fetchC21: sin esto, un tipo sin mapeo en
+  // RMX_SUB mandaría la búsqueda sin ningún subtype_property_ids[], trayendo
+  // resultados de TODOS los subtipos sin filtrar.
+  if (!RMX_SUB[req.tipo]) return [];
   const primera = await fetchJson(urlRemax(req, 1, minUsd, maxUsd));
   if (!Array.isArray(primera.data)) throw new Error('Respuesta inesperada de RE/MAX');
   const items = primera.data.map(normalizarRemax).filter(Boolean);
@@ -573,7 +620,10 @@ async function fetchRemax(req, minUsd, maxUsd) {
 // Endpoint AJAX interno del sitio (mismo que usa su propio buscador). Sin
 // login, sin API key — un POST público común y corriente.
 
-const BIEN_TIPO = { casa: 1, departamento: 2, terreno: 3, oficina: 4, local: 5 };
+// IDs verificados probando id_orig 1-12 contra la API en vivo el 2026-07-28.
+// id 9 ("rural") no tiene nombre de categoría expuesto por la API — inferido
+// del contenido real de sus avisos ("Propiedad 632Ha, Zona Pailon").
+const BIEN_TIPO = { casa: 1, departamento: 2, terreno: 3, oficina: 4, local: 5, deposito: 6, edificio: 7, rural: 9 };
 const BIEN_FILAS = 60;
 // BienInmuebles no expone un total (a diferencia de C21/RE/MAX) — el único
 // endpoint que lo daría (proceso=getPaginador) nos dejó bloqueados por su
@@ -617,8 +667,8 @@ function normalizarBienInmuebles(r, tc, tipo) {
     precio,
     dormitorios: dormitorios > 0 ? dormitorios : null,
     banos: banos > 0 ? banos : null,
-    m2Terreno: tipo === 'terreno' ? m2 : null,
-    m2Construccion: tipo !== 'terreno' ? m2 : null,
+    m2Terreno: TIPOS_TERRENO.has(tipo) ? m2 : null,
+    m2Construccion: TIPOS_TERRENO.has(tipo) ? null : m2,
     zona: [r.nomb_barri, r.nomb_grup].filter(Boolean).join(', '),
     direccion: r.direccion_cata || '',
     lat: Number(r.latitud_cata) || null,
@@ -654,6 +704,10 @@ async function fetchBienInmueblesPagina(req, pagina, modalidad) {
 }
 
 async function fetchBienInmuebles(req, tc) {
+  // Mismo motivo que los guards de fetchC21/fetchRemax: id_orig=0 (lo que
+  // resultaría de un tipo sin mapeo) devuelve resultados sin filtrar, no
+  // vacío — confirmado contra la API en vivo.
+  if (!BIEN_TIPO[req.tipo]) return [];
   const modalidad = req.operacion === 'alquiler' ? '2' : '1';
   const items = [];
   for (let p = 1; p <= BIEN_PAGINAS_MAX; p++) {
@@ -715,6 +769,10 @@ function guardarCacheMobiliario(cache) {
 // Extrae tipo/operación del breadcrumb ("Casas en venta en Santa Cruz…") en
 // vez de confiar solo en @type (Place se usa tanto para terrenos como para
 // otras cosas genéricas) — el texto del breadcrumb es más confiable.
+// quinta/edificio/galpón agregados en 2026-07-28 de forma defensiva — no se
+// confirmó que existan avisos de estas categorías en Mobiliario App (una
+// muestra de 60 avisos reales solo trajo casa/depto/terreno/local/oficina),
+// pero si aparecen en el futuro, quedan bien categorizados sin más cambios.
 function categoriaDesdeBreadcrumb(breadcrumbJson) {
   const cat = breadcrumbJson?.itemListElement?.[1]?.name || '';
   const operacion = /alquiler/i.test(cat) ? 'alquiler' : 'venta';
@@ -724,6 +782,9 @@ function categoriaDesdeBreadcrumb(breadcrumbJson) {
   else if (/terrenos?/i.test(cat)) tipo = 'terreno';
   else if (/locales?/i.test(cat)) tipo = 'local';
   else if (/oficinas?/i.test(cat)) tipo = 'oficina';
+  else if (/quintas?/i.test(cat)) tipo = 'quinta';
+  else if (/edificios?/i.test(cat)) tipo = 'edificio';
+  else if (/galp(o|ó)n(es)?/i.test(cat)) tipo = 'deposito';
   return { operacion, tipo, categoriaTexto: cat };
 }
 
@@ -1368,11 +1429,12 @@ function calcularEstadisticasMercado(items, tipo, sujeto) {
   if (!conPrecio.length) return null;
   const precios = conPrecio.map((i) => i.precio).sort((a, b) => a - b);
 
-  // Terreno se compara por precio/m² de terreno; el resto (casa, depto,
-  // local, oficina) por precio/m² construido. `esComparableSano` es el
-  // filtro de cordura — corre ACÁ, antes de cualquier otra cosa, y es
-  // independiente del chequeo de outlier estadístico de más abajo.
-  const campoM2 = tipo === 'terreno' ? 'm2Terreno' : 'm2Construccion';
+  // Terreno (y los tipos tipo-terreno: terreno-comercial/rural/rancho/
+  // agrícola/ganadera) se compara por precio/m² de terreno; el resto por
+  // precio/m² construido. `esComparableSano` es el filtro de cordura — corre
+  // ACÁ, antes de cualquier otra cosa, y es independiente del chequeo de
+  // outlier estadístico de más abajo.
+  const campoM2 = TIPOS_TERRENO.has(tipo) ? 'm2Terreno' : 'm2Construccion';
   const conM2 = conPrecio.filter((i) => esComparableSano(i, campoM2));
   let precioM2Promedio = null;
   let precioM2Mediana = null;
@@ -1397,7 +1459,7 @@ function calcularEstadisticasMercado(items, tipo, sujeto) {
     // misma zona de texto libre. Con pocos B (<4) no alcanza para 4 grupos
     // con sentido: se usa la mediana global como respaldo.
     let medianaParaItem;
-    if (tipo === 'terreno' && soloB.length >= 4) {
+    if (TIPOS_TERRENO.has(tipo) && soloB.length >= 4) {
       const ordenadosPorTamano = [...soloB].sort((a, b) => a.item[campoM2] - b.item[campoM2]);
       const n = ordenadosPorTamano.length;
       const cuartilDe = (idx) => Math.min(3, Math.floor((idx / n) * 4));
@@ -1528,8 +1590,8 @@ function parsearComparablesManuales(json, tipo) {
       fuente: 'Manual',
       nivel: c.nivel === 'A' ? 'A' : 'C',
       precio: parsePrecio(c.precio),
-      m2Terreno: tipo === 'terreno' ? parsePrecio(c.m2) : null,
-      m2Construccion: tipo !== 'terreno' ? parsePrecio(c.m2) : null,
+      m2Terreno: TIPOS_TERRENO.has(tipo) ? parsePrecio(c.m2) : null,
+      m2Construccion: TIPOS_TERRENO.has(tipo) ? null : parsePrecio(c.m2),
       fecha: c.fecha || null,
       titulo: c.nota || 'Comparable manual',
       link: c.link || 'manual-' + Math.random().toString(36).slice(2),
@@ -1676,7 +1738,8 @@ const PROMPT_INTERPRETAR =
   'dictados por voz, a veces desordenados o con palabras repetidas — interpretá la intención real, ' +
   'no el texto literal. Extraé los criterios de búsqueda y devolvelos en JSON, con EXACTAMENTE estas ' +
   'claves de tipo string (todas presentes, "" si no aplica): cliente, operacion (venta|alquiler), ' +
-  'tipo (casa|departamento|terreno|local|oficina), zona, moneda (usd|bob), precioMin, precioMax, ' +
+  'tipo (casa|departamento|terreno|local|oficina|quinta|terreno-comercial|edificio|deposito|tinglado|' +
+  'rural|rancho|agricolas|ganaderas|cochera|hotel|colegio|proyecto), zona, moneda (usd|bob), precioMin, precioMax, ' +
   'dormitorios, banos, m2TerrenoMin, m2TerrenoMax, m2ConstruccionMin, m2ConstruccionMax, palabras, ' +
   'excluir, antiguedadMaxDias, dudas. Reglas: ' +
   'zona puede ser una lista separada por comas (ej. "norte, este, Doble Vía a La Guardia"); ' +
@@ -1699,7 +1762,14 @@ const SCHEMA_INTERPRETAR = {
   properties: {
     cliente: { type: 'string' },
     operacion: { type: 'string', enum: ['venta', 'alquiler'] },
-    tipo: { type: 'string', enum: ['casa', 'departamento', 'terreno', 'local', 'oficina'] },
+    tipo: {
+      type: 'string',
+      enum: [
+        'casa', 'departamento', 'terreno', 'local', 'oficina',
+        'quinta', 'terreno-comercial', 'edificio', 'deposito', 'tinglado',
+        'rural', 'rancho', 'agricolas', 'ganaderas', 'cochera', 'hotel', 'colegio', 'proyecto',
+      ],
+    },
     zona: { type: 'string' },
     moneda: { type: 'string', enum: ['usd', 'bob'] },
     precioMin: { type: 'string' },

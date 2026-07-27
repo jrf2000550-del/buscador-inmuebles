@@ -453,8 +453,21 @@
               <option value="casa">Casa</option>
               <option value="departamento">Departamento</option>
               <option value="terreno">Terreno</option>
+              <option value="terreno-comercial">Terreno comercial</option>
+              <option value="quinta">Quinta / casa de campo</option>
               <option value="local">Local comercial</option>
               <option value="oficina">Oficina</option>
+              <option value="edificio">Edificio</option>
+              <option value="deposito">Depósito / galpón</option>
+              <option value="tinglado">Tinglado</option>
+              <option value="rural">Propiedad rural</option>
+              <option value="rancho">Rancho</option>
+              <option value="agricolas">Agrícola</option>
+              <option value="ganaderas">Ganadera</option>
+              <option value="cochera">Cochera</option>
+              <option value="hotel">Hotel</option>
+              <option value="colegio">Colegio</option>
+              <option value="proyecto">Proyecto (preventa)</option>
             </select>
           </label>
         </div>
@@ -532,8 +545,21 @@
           <option value="casa">Casa</option>
           <option value="departamento">Departamento</option>
           <option value="terreno">Terreno</option>
+          <option value="terreno-comercial">Terreno comercial</option>
+          <option value="quinta">Quinta / casa de campo</option>
           <option value="local">Local comercial</option>
           <option value="oficina">Oficina</option>
+          <option value="edificio">Edificio</option>
+          <option value="deposito">Depósito / galpón</option>
+          <option value="tinglado">Tinglado</option>
+          <option value="rural">Propiedad rural</option>
+          <option value="rancho">Rancho</option>
+          <option value="agricolas">Agrícola</option>
+          <option value="ganaderas">Ganadera</option>
+          <option value="cochera">Cochera</option>
+          <option value="hotel">Hotel</option>
+          <option value="colegio">Colegio</option>
+          <option value="proyecto">Proyecto (preventa)</option>
         </select>
         <input type="text" id="acmRapidoZona" placeholder="Zona (ej: Equipetrol)">
         <input type="number" id="acmRapidoM2" placeholder="m² aproximado">
@@ -581,6 +607,10 @@
 <script>
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
+
+// Mismo Set que TIPOS_TERRENO en server.js — tipos donde el m² relevante es
+// el de terreno, no el construido. Mantener sincronizado si se agregan tipos.
+const TIPOS_TERRENO = new Set(['terreno', 'terreno-comercial', 'rural', 'rancho', 'agricolas', 'ganaderas']);
 
 // ---------- Autenticación (multiagente) ----------
 let API_KEY = localStorage.getItem('buscadorApiKey') || '';
@@ -1011,7 +1041,7 @@ $('#btnInterpretarRapido').addEventListener('click', async () => {
     // Un solo m² aproximado, no un rango: el intérprete siempre devuelve
     // min/max (pensado para rangos de búsqueda de cliente) — acá se
     // promedia si vienen los dos, o se toma el que haya.
-    const esTerreno = (c.tipo || 'casa') === 'terreno';
+    const esTerreno = TIPOS_TERRENO.has(c.tipo || 'casa');
     const min = parseFloat(esTerreno ? c.m2TerrenoMin : c.m2ConstruccionMin) || null;
     const max = parseFloat(esTerreno ? c.m2TerrenoMax : c.m2ConstruccionMax) || null;
     const aprox = min != null && max != null ? Math.round((min + max) / 2) : min ?? max ?? '';
@@ -1037,8 +1067,8 @@ $('#btnGenerarAcmRapido').addEventListener('click', async () => {
   // "sujeto" para ponderar Y son el filtro duro de búsqueda — un solo valor
   // exacto sería un filtro demasiado angosto (casi ningún aviso real cae
   // justo en un m² exacto).
-  const campoMin = tipo === 'terreno' ? 'm2TerrenoMin' : 'm2ConstruccionMin';
-  const campoMax = tipo === 'terreno' ? 'm2TerrenoMax' : 'm2ConstruccionMax';
+  const campoMin = TIPOS_TERRENO.has(tipo) ? 'm2TerrenoMin' : 'm2ConstruccionMin';
+  const campoMax = TIPOS_TERRENO.has(tipo) ? 'm2TerrenoMax' : 'm2ConstruccionMax';
   const params = new URLSearchParams({ operacion: 'venta', tipo }); // operacion fija a venta — mismo criterio de alcance reducido que el m², no viene del intérprete
   if (zona) params.set('zona', zona);
   params.set(campoMin, String(Math.round(m2 * 0.8)));
@@ -1460,10 +1490,23 @@ function interpretarDictado(t) {
   else if (/venta|comprar|compra|invertir/.test(texto)) r.operacion = 'venta';
 
   if (/departamento|depto|monoambiente|penthouse/.test(texto)) r.tipo = 'departamento';
+  else if (/quinta|casa de campo/.test(texto)) r.tipo = 'quinta';
   else if (/\bcasa\b|casita|chalet/.test(texto)) r.tipo = 'casa';
+  else if (/terreno comercial/.test(texto)) r.tipo = 'terreno-comercial';
   else if (/terreno|lote/.test(texto)) r.tipo = 'terreno';
   else if (/local/.test(texto)) r.tipo = 'local';
   else if (/oficina/.test(texto)) r.tipo = 'oficina';
+  else if (/edificio/.test(texto)) r.tipo = 'edificio';
+  else if (/dep[oó]sito|galp[oó]n/.test(texto)) r.tipo = 'deposito';
+  else if (/tinglado/.test(texto)) r.tipo = 'tinglado';
+  else if (/rancho/.test(texto)) r.tipo = 'rancho';
+  else if (/agr[ií]cola/.test(texto)) r.tipo = 'agricolas';
+  else if (/ganader/.test(texto)) r.tipo = 'ganaderas';
+  else if (/\brural\b/.test(texto)) r.tipo = 'rural';
+  else if (/cochera/.test(texto)) r.tipo = 'cochera';
+  else if (/hotel/.test(texto)) r.tipo = 'hotel';
+  else if (/colegio/.test(texto)) r.tipo = 'colegio';
+  else if (/proyecto|preventa/.test(texto)) r.tipo = 'proyecto';
 
   let m = texto.match(/(\d+|un|uno|dos|tres|cuatro|cinco|seis)\s*(dormitorios?|habitaciones?|cuartos?|suites?)/);
   if (m) r.dormitorios = aNumero(m[1]);
