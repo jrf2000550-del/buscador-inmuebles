@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Inventario — Sofymar IA</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#0a0e1a">
+<style>
+  :root {
+    --bg: #0a0e1a; --bg-elevated: #0f1524; --panel: #141b2e; --panel-2: #1a2338; --panel-3: #202b45;
+    --border: #263252; --border-soft: #1d2740; --text: #eef1f8; --muted: #8b95af; --muted-2: #5f6b89;
+    --accent: #ea7c52; --accent-2: #b8582f; --accent-light: #ff9d75; --accent-ink: #200d02;
+    --ok: #4ade80; --ok-soft: #10281c; --radius-lg: 20px; --radius: 16px; --radius-sm: 11px; --radius-xs: 8px;
+    --shadow: 0 12px 32px -12px rgba(0,0,0,.55); --shadow-lg: 0 24px 60px -20px rgba(0,0,0,.6);
+    --font: -apple-system, 'Segoe UI', system-ui, Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: var(--font); color: var(--text); -webkit-font-smoothing: antialiased;
+    background: radial-gradient(1100px 480px at 105% -12%, rgba(234,124,82,.10), transparent),
+      radial-gradient(900px 420px at -8% 8%, rgba(45,212,191,.07), transparent), var(--bg);
+    min-height: 100vh;
+  }
+  header {
+    padding: 28px 28px 24px; text-align: center; border-bottom: 1px solid var(--border-soft);
+  }
+  header h1 { font-size: 22px; font-weight: 800; letter-spacing: -.02em; margin: 0 0 4px; }
+  header p { color: var(--muted); font-size: 13px; margin: 0; }
+  main { max-width: 1100px; margin: 0 auto; padding: 28px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+
+  .card {
+    background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--border-soft);
+    border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); display: flex; flex-direction: column;
+  }
+  .card .foto-principal {
+    width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: var(--panel-3); display: block; cursor: pointer;
+  }
+  .card .sin-foto {
+    width: 100%; aspect-ratio: 4 / 3; background: var(--panel-3); display: flex; align-items: center; justify-content: center;
+    color: var(--muted-2); font-size: 13px;
+  }
+  .card .miniaturas { display: flex; gap: 4px; padding: 6px 10px 0; overflow-x: auto; }
+  .card .miniaturas img {
+    width: 44px; height: 44px; object-fit: cover; border-radius: 6px; cursor: pointer; border: 1.5px solid transparent; flex: none;
+  }
+  .card .miniaturas img.activa { border-color: var(--accent); }
+  .card .cuerpo { padding: 16px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+  .card .fila-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  .card .titulo { font-weight: 800; font-size: 15px; line-height: 1.3; }
+  .card .precio { color: var(--accent-light); font-weight: 800; font-size: 15px; white-space: nowrap; }
+  .card .badge-op { font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--ok-soft); color: #86efac; text-transform: uppercase; letter-spacing: .02em; }
+  .card .specs { color: var(--muted); font-size: 12.5px; line-height: 1.6; }
+  .card .descripcion { color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+  .card .contactar {
+    margin-top: auto; display: block; text-align: center; background: linear-gradient(135deg, #25d366, #128c7e);
+    color: #fff; font-weight: 800; border-radius: var(--radius-xs); padding: 11px 16px; font-size: 13.5px;
+    text-decoration: none;
+  }
+
+  .vacio { color: var(--muted); text-align: center; padding: 60px 20px; font-size: 14px; }
+  .cargando { color: var(--muted); text-align: center; padding: 60px 20px; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="tituloHeader">Inventario</h1>
+  <p id="subHeader">Cargando...</p>
+</header>
+<main>
+  <div id="contenido" class="cargando">Cargando propiedades...</div>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const agenteId = new URLSearchParams(location.search).get('a');
+
+function fmtPrecio(n) {
+  return n ? 'U$S ' + Number(n).toLocaleString('es-BO') : 'Consultar precio';
+}
+
+function specsLinea(p) {
+  return [
+    p.dormitorios ? p.dormitorios + ' dorm.' : null,
+    p.banos ? p.banos + ' baños' : null,
+    p.m2Terreno ? 'terreno ' + p.m2Terreno + ' m²' : null,
+    p.m2Construccion ? 'constr. ' + p.m2Construccion + ' m²' : null,
+  ].filter(Boolean).join(' · ');
+}
+
+function tarjeta(p, telefonoContacto, nombreAgente) {
+  const fotos = p.fotos || [];
+  const fotoPrincipal = fotos.length
+    ? `<img class="foto-principal" id="foto-${p.id}" src="${fotos[0]}" alt="${p.titulo}">`
+    : `<div class="sin-foto">Sin fotos todavía</div>`;
+  const miniaturas = fotos.length > 1
+    ? `<div class="miniaturas">${fotos.map((f, idx) => `<img src="${f}" class="${idx === 0 ? 'activa' : ''}" onclick="cambiarFoto('${p.id}','${f}',this)">`).join('')}</div>`
+    : '';
+  const msg = encodeURIComponent(`Hola ${nombreAgente}, vi tu propiedad "${p.titulo}" en tu vitrina y me interesa. ¿Seguís disponible?`);
+  const contactar = telefonoContacto
+    ? `<a class="contactar" href="https://wa.me/${telefonoContacto.replace(/\D/g, '')}?text=${msg}" target="_blank">💬 Contactar por WhatsApp</a>`
+    : '';
+  return `
+  <div class="card">
+    ${fotoPrincipal}
+    ${miniaturas}
+    <div class="cuerpo">
+      <div class="fila-top">
+        <span class="titulo">${p.titulo}</span>
+        <span class="precio">${fmtPrecio(p.precio)}</span>
+      </div>
+      <div><span class="badge-op">${p.operacion}</span></div>
+      <div class="specs">${p.tipo}${p.zona ? ' · ' + p.zona : ''}${specsLinea(p) ? '<br>' + specsLinea(p) : ''}</div>
+      ${p.descripcion ? `<div class="descripcion">${p.descripcion}</div>` : ''}
+      ${contactar}
+    </div>
+  </div>`;
+}
+
+function cambiarFoto(id, url, el) {
+  $('#foto-' + id).src = url;
+  el.parentElement.querySelectorAll('img').forEach((i) => i.classList.remove('activa'));
+  el.classList.add('activa');
+}
+
+async function iniciar() {
+  if (!agenteId) {
+    $('#subHeader').textContent = 'Link inválido.';
+    $('#contenido').className = 'vacio';
+    $('#contenido').textContent = 'Falta el identificador de la vitrina en el link.';
+    return;
+  }
+  try {
+    const resp = await fetch('/api/vitrina/' + agenteId);
+    if (!resp.ok) {
+      $('#subHeader').textContent = 'No encontrada.';
+      $('#contenido').className = 'vacio';
+      $('#contenido').textContent = 'Esta vitrina no existe o ya no está disponible.';
+      return;
+    }
+    const data = await resp.json();
+    document.title = 'Inventario de ' + data.agente.nombre + ' — Sofymar IA';
+    $('#tituloHeader').textContent = 'Inventario de ' + data.agente.nombre;
+    $('#subHeader').textContent = data.propiedades.length
+      ? data.propiedades.length + ' propiedad(es) disponible(s)'
+      : 'Todavía no hay propiedades cargadas';
+    if (!data.propiedades.length) {
+      $('#contenido').className = 'vacio';
+      $('#contenido').textContent = 'Todavía no hay propiedades disponibles en este inventario.';
+      return;
+    }
+    $('#contenido').className = 'grid';
+    $('#contenido').innerHTML = data.propiedades.map((p) => tarjeta(p, data.agente.telefonoContacto, data.agente.nombre)).join('');
+  } catch {
+    $('#subHeader').textContent = 'Error al cargar.';
+    $('#contenido').className = 'vacio';
+    $('#contenido').textContent = 'No se pudo cargar la vitrina — intentá de nuevo en un momento.';
+  }
+}
+iniciar();
+</script>
+</body>
+</html>

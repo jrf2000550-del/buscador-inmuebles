@@ -95,6 +95,14 @@
   .agregar-comentario-inv { display: flex; gap: 6px; margin-top: 4px; }
   .agregar-comentario-inv input { flex: 1; font-size: 12px; padding: 6px 8px; }
   .agregar-comentario-inv button { padding: 6px 10px; font-size: 12px; box-shadow: none; }
+
+  .sub { color: var(--muted); font-size: 12.5px; margin: 0; }
+  .fila-vitrina { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 12px 0; }
+  .fila-vitrina input[type="text"] { flex: 1; min-width: 220px; }
+  .fila-telefono { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+  .fila-telefono label { flex: 1; min-width: 200px; }
+  .fotos-preview { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .fotos-preview img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
 </style>
 </head>
 <body>
@@ -119,6 +127,21 @@
     </div>
   </header>
   <main>
+    <div class="panel" id="panelVitrina">
+      <h2>🔗 Mi vitrina pública</h2>
+      <p class="sub">Compartí este link con colegas — ven tu inventario disponible con fotos, tipo portal, y un botón para contactarte directo.</p>
+      <div class="fila-vitrina">
+        <input type="text" id="linkVitrina" readonly>
+        <button type="button" class="chico" id="btnCopiarVitrina">Copiar link</button>
+        <a id="abrirVitrina" href="#" target="_blank"><button type="button" class="chico fantasma">Ver como colega →</button></a>
+      </div>
+      <div class="fila-telefono">
+        <label>Tu WhatsApp de contacto <input id="campoTelefonoContacto" placeholder="Ej: 59170000000 (con código de país)"></label>
+        <button type="button" class="chico" id="btnGuardarTelefono">Guardar</button>
+      </div>
+      <p id="msgTelefono" class="sub" style="display:none; color: var(--ok); margin-top:6px"></p>
+    </div>
+
     <div class="panel">
       <h2 id="tituloForm">Agregar</h2>
       <form id="formInv">
@@ -174,6 +197,7 @@
           <label>m² construcción <input name="m2Construccion" type="number"></label>
           <label class="full" id="labelCaptadorNombre" style="display:none">Nombre del captador <input name="captadorNombre" placeholder="Quién la captó"></label>
           <label id="labelCaptadorTelefono" style="display:none">Teléfono del captador <input name="captadorTelefono" placeholder="Para preguntarle si sigue disponible"></label>
+          <label class="full">Carpeta de Google Drive (fotos) <input name="fotosCarpetaDrive" placeholder="Pegá el link de la carpeta compartida — las fotos se traen solas"></label>
           <label class="full">Descripción <textarea name="descripcion" rows="2"></textarea></label>
         </div>
         <div class="acciones-form">
@@ -241,8 +265,35 @@ async function iniciar() {
     $('#gate').style.display = 'none';
     $('#app').style.display = 'block';
     $('#sesionNombre').textContent = 'Sesión: ' + quien.agente.nombre;
+    const link = location.origin + '/vitrina.html?a=' + quien.agente.id;
+    $('#linkVitrina').value = link;
+    $('#abrirVitrina').href = link;
+    $('#campoTelefonoContacto').value = quien.agente.telefonoContacto || '';
     cargarInventario();
   } catch {}
+}
+
+$('#btnCopiarVitrina').addEventListener('click', async () => {
+  await navigator.clipboard.writeText($('#linkVitrina').value);
+  const btn = $('#btnCopiarVitrina');
+  const original = btn.textContent;
+  btn.textContent = '¡Copiado!';
+  setTimeout(() => { btn.textContent = original; }, 1500);
+});
+
+$('#btnGuardarTelefono').addEventListener('click', async () => {
+  await apiFetch('/api/perfil', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ telefonoContacto: $('#campoTelefonoContacto').value.trim() }),
+  });
+  $('#msgTelefono').style.display = 'block';
+  $('#msgTelefono').textContent = 'Guardado.';
+  setTimeout(() => { $('#msgTelefono').style.display = 'none'; }, 2000);
+});
+
+async function refrescarFotos(id) {
+  await apiFetch('/api/inventario/' + id + '/refrescar-fotos', { method: 'POST' });
+  cargarInventario();
 }
 
 $('#campoCategoria').addEventListener('change', (e) => {
@@ -339,7 +390,9 @@ function renderLista() {
         <button type="button" class="chico" onclick="confirmarDisponible('${i.id}')">Sigue disponible</button>
         <button type="button" class="chico fantasma" onclick='editarInv(${JSON.stringify(i)})'>Editar</button>
         <button type="button" class="chico fantasma" onclick="borrarInv('${i.id}')">Borrar</button>
+        ${i.fotosCarpetaDrive ? `<button type="button" class="chico fantasma" onclick="refrescarFotos('${i.id}')">🔄 Actualizar fotos (${(i.fotos || []).length})</button>` : ''}
       </div>
+      ${(i.fotos && i.fotos.length) ? `<div class="fotos-preview">${i.fotos.slice(0, 4).map((f) => `<img src="${f}" loading="lazy">`).join('')}</div>` : ''}
       ${bloqueComentariosInv(i)}
     </div>`;
   }).join('');

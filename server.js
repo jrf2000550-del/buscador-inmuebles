@@ -262,7 +262,36 @@ function camposInventario(body) {
     captadorNombre: (body.captadorNombre || '').trim(),
     captadorTelefono: (body.captadorTelefono || '').trim(),
     estado: ['disponible', 'vendido', 'no_disponible'].includes(body.estado) ? body.estado : 'disponible',
+    // Carpeta de Google Drive ya organizada por el agente — de ahí se
+    // resuelven las fotos automáticamente, sin subir nada a mano.
+    fotosCarpetaDrive: (body.fotosCarpetaDrive || '').trim(),
   };
+}
+
+// Fotos automáticas desde la carpeta de Drive de cada propiedad. Requiere
+// GOOGLE_API_KEY (una API key de Google Cloud restringida a la Drive API —
+// NO hace falta OAuth porque la carpeta ya está compartida como "cualquiera
+// con el link puede ver"). Sin esa key configurada, el campo se guarda igual
+// pero no se resuelven fotos (no rompe nada, solo queda pendiente).
+function idCarpetaDrive(url) {
+  const m = String(url || '').match(/[-\w]{25,}/);
+  return m ? m[0] : null;
+}
+
+async function resolverFotosDrive(carpetaUrl) {
+  const id = idCarpetaDrive(carpetaUrl);
+  if (!id || !process.env.GOOGLE_API_KEY) return [];
+  try {
+    const q = encodeURIComponent(`'${id}' in parents and mimeType contains 'image/' and trashed = false`);
+    const resp = await fetch(
+      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&pageSize=50&key=${process.env.GOOGLE_API_KEY}`
+    );
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return (data.files || []).map((f) => `https://drive.google.com/thumbnail?id=${f.id}&sz=w1200`);
+  } catch {
+    return [];
+  }
 }
 
 // Corre matcheaPropiedad contra los requerimientos guardados DEL MISMO
@@ -2039,7 +2068,7 @@ async function manejarRequest(req, res) {
   if (url.pathname === '/api/whoami' && req.method === 'GET') {
     return json(res, 200, {
       requiereAuth,
-      agente: agente ? { id: agente.id, nombre: agente.nombre, trial: estadoTrial(agente) } : null,
+      agente: agente ? { id: agente.id, nombre: agente.nombre, trial: estadoTrial(agente), telefonoContacto: agente.telefonoContacto || '' } : null,
     });
   }
 
@@ -2249,6 +2278,37 @@ async function manejarRequest(req, res) {
     return json(res, 404, { error: 'Ruta de administración no encontrada.' });
   }
 
+  // Vitrina pública: el link que el agente comparte con colegas para mostrar
+  // SU inventario ("mio", disponible) tipo portal, sin que el que la ve
+  // necesite cuenta ni key. Nunca expone las captaciones "otro" (son notas
+  // privadas del agente sobre propiedades ajenas, no su propia oferta).
+  const mVitrina = url.pathname.match(/^\/api\/vitrina\/([^/]+)$/);
+  if (mVitrina && req.method === 'GET') {
+    const [, id] = mVitrina;
+    const agenteVitrina = leerAgentes().find((a) => a.id === id);
+    if (!agenteVitrina) return json(res, 404, { error: 'No existe esa vitrina.' });
+    const propiedades = leerInventario(id)
+      .filter((i) => i.categoria === 'mio' && i.estado === 'disponible')
+      .map((i) => ({
+        id: i.id,
+        titulo: i.titulo,
+        descripcion: i.descripcion,
+        operacion: i.operacion,
+        tipo: i.tipo,
+        precio: i.precio,
+        zona: i.zona,
+        dormitorios: i.dormitorios,
+        banos: i.banos,
+        m2Terreno: i.m2Terreno,
+        m2Construccion: i.m2Construccion,
+        fotos: i.fotos || [],
+      }));
+    return json(res, 200, {
+      agente: { nombre: agenteVitrina.nombre, telefonoContacto: agenteVitrina.telefonoContacto || '' },
+      propiedades,
+    });
+  }
+
   // En modo multiagente, toda otra ruta /api/* exige una key válida.
   if (url.pathname.startsWith('/api/') && requiereAuth && !agente) {
     return json(res, 401, { error: 'Falta iniciar sesión o tener una clave de acceso válida.' });
@@ -2414,6 +2474,19 @@ async function manejarRequest(req, res) {
     return json(res, 200, { propiedad, matches: matches.length, alertas });
   }
 
+  // Perfil del propio agente (hoy solo el teléfono de contacto que se
+  // muestra en su vitrina pública) — separado de camposRequerimiento/
+  // camposInventario porque esto edita al agente mismo, no un requerimiento.
+  if (url.pathname === '/api/perfil' && req.method === 'PUT') {
+    const body = await leerBody(req);
+    const lista = leerAgentes();
+    const idx = lista.findIndex((a) => a.id === agenteId);
+    if (idx === -1) return json(res, 404, { error: 'No existe el agente.' });
+    lista[idx] = { ...lista[idx], telefonoContacto: (body.telefonoContacto || '').trim() };
+    guardarAgentes(lista);
+    return json(res, 200, { ok: true, telefonoContacto: lista[idx].telefonoContacto });
+  }
+
   // ---------- Inventario propio ----------
   if (url.pathname === '/api/inventario' && req.method === 'GET') {
     return json(res, 200, leerInventario(agenteId));
@@ -2428,6 +2501,7 @@ async function manejarRequest(req, res) {
       fotos: [],
       ...camposInventario(body),
     };
+    if (nuevo.fotosCarpetaDrive) nuevo.fotos = await resolverFotosDrive(nuevo.fotosCarpetaDrive);
     const lista = leerInventario(agenteId);
     lista.unshift(nuevo);
     guardarInventario(lista, agenteId);
@@ -2472,6 +2546,17 @@ async function manejarRequest(req, res) {
     return json(res, 200, lista[idx]);
   }
 
+  const mInventarioRefrescarFotos = url.pathname.match(/^\/api\/inventario\/([^/]+)\/refrescar-fotos$/);
+  if (mInventarioRefrescarFotos && req.method === 'POST') {
+    const [, id] = mInventarioRefrescarFotos;
+    const lista = leerInventario(agenteId);
+    const idx = lista.findIndex((i) => i.id === id);
+    if (idx === -1) return json(res, 404, { error: 'No existe ese ítem de inventario.' });
+    lista[idx] = { ...lista[idx], fotos: await resolverFotosDrive(lista[idx].fotosCarpetaDrive) };
+    guardarInventario(lista, agenteId);
+    return json(res, 200, lista[idx]);
+  }
+
   if (url.pathname.startsWith('/api/inventario/') && req.method === 'PUT') {
     const id = url.pathname.split('/').pop();
     const lista = leerInventario(agenteId);
@@ -2479,6 +2564,7 @@ async function manejarRequest(req, res) {
     if (idx === -1) return json(res, 404, { error: 'No existe ese ítem de inventario.' });
     const body = await leerBody(req);
     const actualizado = { ...lista[idx], ...camposInventario(body) };
+    if (actualizado.fotosCarpetaDrive) actualizado.fotos = await resolverFotosDrive(actualizado.fotosCarpetaDrive);
     lista[idx] = actualizado;
     guardarInventario(lista, agenteId);
     const alertas = matchearInventarioConRequerimientos(actualizado, agenteId);
