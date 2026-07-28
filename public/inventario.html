@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mi Inventario — Buscador de Inmuebles</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#0a0e1a">
+<style>
+  :root {
+    --bg: #0a0e1a; --bg-elevated: #0f1524; --panel: #141b2e; --panel-2: #1a2338; --panel-3: #202b45;
+    --border: #263252; --border-soft: #1d2740; --text: #eef1f8; --muted: #8b95af; --muted-2: #5f6b89;
+    --accent: #ea7c52; --accent-2: #b8582f; --accent-light: #ff9d75; --accent-ink: #200d02;
+    --info: #2dd4bf; --info-2: #14b8a6; --ok: #4ade80; --ok-soft: #10281c;
+    --danger: #f36b6b; --danger-soft: #2c1414; --warn: #fbbf24; --warn-soft: #2e2306;
+    --radius-lg: 20px; --radius: 16px; --radius-sm: 11px; --radius-xs: 8px;
+    --shadow: 0 12px 32px -12px rgba(0,0,0,.55);
+    --font: -apple-system, 'Segoe UI', system-ui, Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: var(--font); color: var(--text); -webkit-font-smoothing: antialiased;
+    background: radial-gradient(1100px 480px at 105% -12%, rgba(234,124,82,.10), transparent),
+      radial-gradient(900px 420px at -8% 8%, rgba(45,212,191,.07), transparent), var(--bg);
+    min-height: 100vh;
+  }
+  header { padding: 18px 28px; border-bottom: 1px solid var(--border-soft); display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; font-weight: 800; letter-spacing: -.02em; margin: 0; }
+  header .subt { color: var(--muted); font-size: 12px; }
+  main { max-width: 980px; margin: 0 auto; padding: 28px; display: grid; gap: 24px; }
+
+  #gate { display: flex; align-items: center; justify-content: center; min-height: 70vh; }
+  #gate .caja {
+    background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: 34px; max-width: 380px; width: 100%; display: grid; gap: 14px; box-shadow: var(--shadow); text-align: center;
+  }
+  #gate h2 { margin: 0; font-size: 19px; font-weight: 800; }
+  #gate p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+  #gate a button { width: 100%; }
+
+  label { font-size: 12.5px; color: var(--muted); display: grid; gap: 6px; font-weight: 600; }
+  input, select, textarea {
+    background: var(--panel-2); border: 1.5px solid var(--border); color: var(--text); border-radius: var(--radius-xs);
+    padding: 10px 12px; font-size: 14px; width: 100%; font-family: inherit;
+  }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px rgba(234,124,82,.16); }
+  button {
+    background: linear-gradient(135deg, var(--accent-light), var(--accent) 60%, var(--accent-2)); color: #200d02;
+    font-weight: 800; border: 0; border-radius: var(--radius-xs); padding: 11px 16px; font-size: 14px; cursor: pointer;
+    font-family: inherit; box-shadow: 0 6px 18px -8px rgba(234,124,82,.55);
+  }
+  button:hover { filter: brightness(1.06); }
+  button.chico { padding: 6px 12px; font-size: 12px; box-shadow: none; }
+  button.fantasma { background: transparent; color: var(--muted); border: 1.5px solid var(--border); box-shadow: none; }
+  button.fantasma:hover { color: var(--text); filter: none; }
+  .error { color: var(--danger); font-size: 13px; }
+
+  .panel { background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius); padding: 20px; }
+  .panel h2 { margin: 0 0 14px; font-size: 15px; font-weight: 800; display: flex; align-items: center; gap: 9px; }
+  .panel h2::before { content: ''; width: 3px; height: 12px; border-radius: 3px; background: linear-gradient(180deg, var(--accent), var(--info)); }
+
+  .grid-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .grid-form .full { grid-column: 1 / -1; }
+  #formInv { display: grid; gap: 12px; }
+  #formInv .acciones-form { display: flex; gap: 8px; align-items: center; }
+
+  .tabs-inv { display: flex; gap: 8px; margin-bottom: 16px; }
+  .tabs-inv button { background: var(--panel-2); color: var(--muted); box-shadow: none; border: 1.5px solid var(--border); }
+  .tabs-inv button.activo { background: linear-gradient(135deg, var(--accent-light), var(--accent) 60%, var(--accent-2)); color: #200d02; border-color: transparent; }
+  .filtros-inv { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+  .filtros-inv input, .filtros-inv select { width: auto; min-width: 160px; }
+
+  .badge { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
+  .badge.disponible { background: var(--ok-soft); color: #86efac; }
+  .badge.vendido { background: var(--panel-3); color: var(--muted); }
+  .badge.no_disponible { background: var(--danger-soft); color: #ffb4b4; }
+  .badge.vencido { background: var(--warn-soft); color: var(--warn); }
+  .vacio { color: var(--muted); text-align: center; padding: 30px; font-size: 13px; }
+
+  .item-inv { background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); padding: 14px 16px; margin-bottom: 10px; }
+  .item-inv .fila1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .item-inv .titulo { font-weight: 800; font-size: 14px; }
+  .item-inv .detalle { color: var(--muted); font-size: 12.5px; line-height: 1.6; margin: 6px 0; }
+  .item-inv .acciones { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+
+  .comentarios-inv { margin-top: 8px; font-size: 12px; }
+  .comentarios-inv summary { cursor: pointer; color: var(--muted); user-select: none; }
+  .comentarios-inv summary:hover { color: var(--text); }
+  .lista-comentarios-inv { margin: 8px 0; display: grid; gap: 6px; }
+  .comentario-item-inv { display: flex; align-items: center; gap: 6px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 6px 8px; }
+  .comentario-item-inv span:first-child { flex: 1; color: var(--text); }
+  .comentario-item-inv .fecha { color: var(--muted); font-size: 10.5px; white-space: nowrap; }
+  .agregar-comentario-inv { display: flex; gap: 6px; margin-top: 4px; }
+  .agregar-comentario-inv input { flex: 1; font-size: 12px; padding: 6px 8px; }
+  .agregar-comentario-inv button { padding: 6px 10px; font-size: 12px; box-shadow: none; }
+</style>
+</head>
+<body>
+
+<div id="gate">
+  <div class="caja">
+    <h2>Mi Inventario</h2>
+    <p>Iniciá sesión desde el Buscador de Inmuebles primero — esta sección usa la misma cuenta.</p>
+    <a href="/"><button type="button">Ir al Buscador →</button></a>
+  </div>
+</div>
+
+<div id="app" style="display:none">
+  <header>
+    <div>
+      <h1>📦 Mi Inventario</h1>
+      <div class="subt">Buscador de Inmuebles — Sofymar IA</div>
+    </div>
+    <div style="margin-left:auto; display:flex; gap:10px; align-items:center">
+      <span id="sesionNombre" class="subt"></span>
+      <a href="/"><button type="button" class="fantasma chico">← Volver al buscador</button></a>
+    </div>
+  </header>
+  <main>
+    <div class="panel">
+      <h2 id="tituloForm">Agregar</h2>
+      <form id="formInv">
+        <div class="grid-form">
+          <label>Categoría
+            <select name="categoria" id="campoCategoria">
+              <option value="mio">Mi inventario</option>
+              <option value="otro">Captación de otro agente</option>
+            </select>
+          </label>
+          <label>Operación
+            <select name="operacion">
+              <option value="venta">Venta</option>
+              <option value="alquiler">Alquiler</option>
+            </select>
+          </label>
+          <label>Tipo
+            <select name="tipo" id="campoTipo">
+              <option value="casa">Casa</option>
+              <option value="departamento">Departamento</option>
+              <option value="terreno">Terreno</option>
+              <option value="terreno-comercial">Terreno comercial</option>
+              <option value="quinta">Quinta / casa de campo</option>
+              <option value="local">Local comercial</option>
+              <option value="oficina">Oficina</option>
+              <option value="edificio">Edificio</option>
+              <option value="deposito">Depósito / galpón</option>
+              <option value="tinglado">Tinglado</option>
+              <option value="rural">Propiedad rural</option>
+              <option value="rancho">Rancho</option>
+              <option value="agricolas">Agrícola</option>
+              <option value="ganaderas">Ganadera</option>
+              <option value="cochera">Cochera</option>
+              <option value="hotel">Hotel</option>
+              <option value="colegio">Colegio</option>
+              <option value="proyecto">Proyecto (preventa)</option>
+            </select>
+          </label>
+          <label>Estado
+            <select name="estado">
+              <option value="disponible">Disponible</option>
+              <option value="vendido">Vendido</option>
+              <option value="no_disponible">No disponible</option>
+            </select>
+          </label>
+          <label class="full">Título <input name="titulo" placeholder="Ej: Casa en Equipetrol con piscina"></label>
+          <label>Precio (U$S) <input name="precio" type="number"></label>
+          <label>Zona <input name="zona" placeholder="Ej: Equipetrol"></label>
+          <label class="full">Dirección <input name="direccion" placeholder="Referencia / calle"></label>
+          <label>Dormitorios <input name="dormitorios" type="number"></label>
+          <label>Baños <input name="banos" type="number"></label>
+          <label>m² terreno <input name="m2Terreno" type="number"></label>
+          <label>m² construcción <input name="m2Construccion" type="number"></label>
+          <label class="full" id="labelCaptadorNombre" style="display:none">Nombre del captador <input name="captadorNombre" placeholder="Quién la captó"></label>
+          <label id="labelCaptadorTelefono" style="display:none">Teléfono del captador <input name="captadorTelefono" placeholder="Para preguntarle si sigue disponible"></label>
+          <label class="full">Descripción <textarea name="descripcion" rows="2"></textarea></label>
+        </div>
+        <div class="acciones-form">
+          <button type="submit" id="btnGuardarInv">Guardar</button>
+          <button type="button" class="fantasma" id="btnCancelarInv" style="display:none">Cancelar edición</button>
+          <p class="error" id="errorInv" style="display:none"></p>
+        </div>
+      </form>
+    </div>
+
+    <div class="panel">
+      <div class="tabs-inv">
+        <button type="button" class="activo" data-cat="mio" id="tabMio">Mi inventario</button>
+        <button type="button" data-cat="otro" id="tabOtro">Captaciones de otros agentes</button>
+      </div>
+      <div class="filtros-inv">
+        <input type="text" id="filtroZona" placeholder="Filtrar por zona">
+        <select id="filtroTipoLista">
+          <option value="">Todos los tipos</option>
+        </select>
+        <select id="filtroEstado">
+          <option value="">Todos los estados</option>
+          <option value="disponible">Disponible</option>
+          <option value="vendido">Vendido</option>
+          <option value="no_disponible">No disponible</option>
+        </select>
+      </div>
+      <div id="listaInventario"></div>
+    </div>
+  </main>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let API_KEY = localStorage.getItem('buscadorApiKey') || '';
+let categoriaActiva = 'mio';
+let editandoId = null;
+let ultimoInventario = [];
+
+// Copia el <select> de tipo del formulario para el filtro de la lista,
+// evita mantener la lista de 18 tipos escrita dos veces.
+$('#campoTipo').querySelectorAll('option').forEach((o) => {
+  const clon = o.cloneNode(true);
+  $('#filtroTipoLista').appendChild(clon);
+});
+
+async function apiFetch(url, opciones = {}) {
+  const headers = { ...(opciones.headers || {}) };
+  if (API_KEY) headers['X-Api-Key'] = API_KEY;
+  const resp = await fetch(url, { ...opciones, headers });
+  if (resp.status === 401) {
+    localStorage.removeItem('buscadorApiKey');
+    $('#gate').style.display = 'flex';
+    $('#app').style.display = 'none';
+    throw new Error('401 sin autorización');
+  }
+  return resp;
+}
+
+async function iniciar() {
+  if (!API_KEY) return;
+  try {
+    const quien = await (await fetch('/api/whoami', { headers: { 'X-Api-Key': API_KEY } })).json();
+    if (!quien.agente) return;
+    $('#gate').style.display = 'none';
+    $('#app').style.display = 'block';
+    $('#sesionNombre').textContent = 'Sesión: ' + quien.agente.nombre;
+    cargarInventario();
+  } catch {}
+}
+
+$('#campoCategoria').addEventListener('change', (e) => {
+  const esOtro = e.target.value === 'otro';
+  $('#labelCaptadorNombre').style.display = esOtro ? 'grid' : 'none';
+  $('#labelCaptadorTelefono').style.display = esOtro ? 'grid' : 'none';
+});
+
+$('#tabMio').addEventListener('click', () => cambiarTab('mio'));
+$('#tabOtro').addEventListener('click', () => cambiarTab('otro'));
+function cambiarTab(cat) {
+  categoriaActiva = cat;
+  $('#tabMio').classList.toggle('activo', cat === 'mio');
+  $('#tabOtro').classList.toggle('activo', cat === 'otro');
+  renderLista();
+}
+$('#filtroZona').addEventListener('input', renderLista);
+$('#filtroTipoLista').addEventListener('change', renderLista);
+$('#filtroEstado').addEventListener('change', renderLista);
+
+async function cargarInventario() {
+  ultimoInventario = await (await apiFetch('/api/inventario')).json();
+  renderLista();
+}
+
+function diasSinConfirmar(item) {
+  return Math.floor((Date.now() - new Date(item.ultimaConfirmacion).getTime()) / 86400000);
+}
+
+function bloqueComentariosInv(item) {
+  const comentarios = item.comentarios || [];
+  return `
+    <details class="comentarios-inv">
+      <summary>💬 ${comentarios.length ? comentarios.length + ' comentario(s)' : 'Agregar comentario'}</summary>
+      ${comentarios.length ? `<div class="lista-comentarios-inv">${comentarios.map((c) => `
+        <p class="comentario-item-inv">
+          <span>${c.texto}</span>
+          <span class="fecha">${new Date(c.fecha).toLocaleDateString('es-BO', { day: 'numeric', month: 'short' })}</span>
+          <button type="button" class="fantasma chico" onclick="quitarComentarioInv('${item.id}','${c.id}')">×</button>
+        </p>`).join('')}</div>` : ''}
+      <div class="agregar-comentario-inv">
+        <input type="text" id="comentarioInvInput-${item.id}" placeholder="Ej: agente confirmó que sigue disponible">
+        <button type="button" class="chico" onclick="agregarComentarioInv('${item.id}')">Agregar</button>
+      </div>
+    </details>`;
+}
+
+async function agregarComentarioInv(id) {
+  const input = $('#comentarioInvInput-' + id);
+  const texto = input.value.trim();
+  if (!texto) return;
+  await apiFetch('/api/inventario/' + id + '/comentarios', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ texto }),
+  });
+  cargarInventario();
+}
+async function quitarComentarioInv(itemId, comentarioId) {
+  await apiFetch('/api/inventario/' + itemId + '/comentarios', {
+    method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: comentarioId }),
+  });
+  cargarInventario();
+}
+
+function renderLista() {
+  const zona = $('#filtroZona').value.trim().toLowerCase();
+  const tipo = $('#filtroTipoLista').value;
+  const estado = $('#filtroEstado').value;
+  const filtrado = ultimoInventario.filter((i) =>
+    i.categoria === categoriaActiva &&
+    (!zona || (i.zona || '').toLowerCase().includes(zona)) &&
+    (!tipo || i.tipo === tipo) &&
+    (!estado || i.estado === estado)
+  );
+  if (!filtrado.length) {
+    $('#listaInventario').innerHTML = '<p class="vacio">Sin propiedades acá todavía.</p>';
+    return;
+  }
+  $('#listaInventario').innerHTML = filtrado.map((i) => {
+    const dias = diasSinConfirmar(i);
+    const vencido = i.estado === 'disponible' && dias >= 30;
+    return `
+    <div class="item-inv">
+      <div class="fila1">
+        <span class="titulo">${i.titulo}</span>
+        <span class="badge ${i.estado}">${i.estado.replace('_', ' ')}</span>
+        ${vencido ? '<span class="badge vencido">sin confirmar hace ' + dias + ' día(s)</span>' : ''}
+      </div>
+      <div class="detalle">
+        ${i.operacion} · ${i.tipo} · ${i.zona || 'sin zona'}${i.precio ? ' · U$S ' + Number(i.precio).toLocaleString('es-BO') : ''}
+        ${[i.dormitorios ? i.dormitorios + ' dorm.' : null, i.banos ? i.banos + ' baños' : null, i.m2Terreno ? 'terreno ' + i.m2Terreno + ' m²' : null, i.m2Construccion ? 'constr. ' + i.m2Construccion + ' m²' : null].filter(Boolean).join(' · ')}
+        ${i.categoria === 'otro' && i.captadorNombre ? '<br>Captador: ' + i.captadorNombre + (i.captadorTelefono ? ' (' + i.captadorTelefono + ')' : '') : ''}
+      </div>
+      <div class="acciones">
+        <button type="button" class="chico" onclick="confirmarDisponible('${i.id}')">Sigue disponible</button>
+        <button type="button" class="chico fantasma" onclick='editarInv(${JSON.stringify(i)})'>Editar</button>
+        <button type="button" class="chico fantasma" onclick="borrarInv('${i.id}')">Borrar</button>
+      </div>
+      ${bloqueComentariosInv(i)}
+    </div>`;
+  }).join('');
+}
+
+async function confirmarDisponible(id) {
+  await apiFetch('/api/inventario/' + id + '/confirmar', { method: 'POST' });
+  cargarInventario();
+}
+
+async function borrarInv(id) {
+  if (id === editandoId) cancelarEdicionInv();
+  await apiFetch('/api/inventario/' + id, { method: 'DELETE' });
+  cargarInventario();
+}
+
+function editarInv(item) {
+  editandoId = item.id;
+  const f = $('#formInv');
+  for (const [k, v] of Object.entries(item)) {
+    if (f.elements[k] && v != null) f.elements[k].value = v;
+  }
+  $('#campoCategoria').dispatchEvent(new Event('change'));
+  $('#tituloForm').textContent = 'Editando: ' + item.titulo;
+  $('#btnGuardarInv').textContent = 'Guardar cambios';
+  $('#btnCancelarInv').style.display = 'inline-block';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function cancelarEdicionInv() {
+  editandoId = null;
+  $('#formInv').reset();
+  $('#tituloForm').textContent = 'Agregar';
+  $('#btnGuardarInv').textContent = 'Guardar';
+  $('#btnCancelarInv').style.display = 'none';
+  $('#campoCategoria').dispatchEvent(new Event('change'));
+}
+$('#btnCancelarInv').addEventListener('click', cancelarEdicionInv);
+
+$('#formInv').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('#errorInv').style.display = 'none';
+  const datos = Object.fromEntries(new FormData(e.target));
+  try {
+    if (editandoId) {
+      await apiFetch('/api/inventario/' + editandoId, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(datos),
+      });
+    } else {
+      await apiFetch('/api/inventario', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(datos),
+      });
+    }
+    cancelarEdicionInv();
+    cargarInventario();
+  } catch (err) {
+    $('#errorInv').style.display = 'block';
+    $('#errorInv').textContent = 'Error al guardar — intentá de nuevo.';
+  }
+});
+
+iniciar();
+</script>
+</body>
+</html>

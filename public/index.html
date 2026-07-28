@@ -747,6 +747,7 @@ async function iniciarSesion() {
     $('#sesionInfo').style.display = 'flex';
     $('#sesionInfo').innerHTML =
       'Sesión: <strong>' + quien.agente.nombre + '</strong> ' +
+      '<a href="/inventario.html"><button type="button" class="btn-secundario">📦 Mi Inventario</button></a> ' +
       '<button type="button" class="btn-secundario" id="btnFeedback">💬 Feedback</button> ' +
       '<button type="button" class="btn-secundario" id="btnSalir">Salir</button>';
     $('#btnSalir').addEventListener('click', () => {

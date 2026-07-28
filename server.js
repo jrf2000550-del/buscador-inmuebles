@@ -218,6 +218,72 @@ function guardarRequerimientos(lista, agenteId) {
   fs.writeFileSync(archivoRequerimientos(agenteId), JSON.stringify(lista, null, 2));
 }
 
+// ---------- Inventario propio (por agente, aislado igual que requerimientos) ----------
+// Dos categorías dentro del mismo archivo: 'mio' (propiedades propias del
+// agente) y 'otro' (captaciones de otros agentes que él va anotando a mano,
+// aunque esos otros agentes ni usen la app — es su base de datos personal,
+// NO un pool compartido entre los agentes de la plataforma).
+
+function archivoInventario(agenteId) {
+  return path.join(DATA_DIR, `inventario-${agenteId}.json`);
+}
+
+function leerInventario(agenteId) {
+  try {
+    return JSON.parse(fs.readFileSync(archivoInventario(agenteId), 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
+function guardarInventario(lista, agenteId) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(archivoInventario(agenteId), JSON.stringify(lista, null, 2));
+}
+
+// Normaliza el body de un ítem de inventario (crear/editar) — mismo criterio
+// que camposRequerimiento: una sola función para los dos caminos.
+function camposInventario(body) {
+  return {
+    categoria: body.categoria === 'otro' ? 'otro' : 'mio',
+    titulo: (body.titulo || '(sin título)').trim(),
+    descripcion: (body.descripcion || '').trim(),
+    operacion: body.operacion === 'alquiler' ? 'alquiler' : 'venta',
+    tipo: TIPOS.has(body.tipo) ? body.tipo : 'casa',
+    precio: parsePrecio(body.precio),
+    zona: (body.zona || '').trim(),
+    direccion: (body.direccion || '').trim(),
+    dormitorios: body.dormitorios ? Number(body.dormitorios) : null,
+    banos: body.banos ? Number(body.banos) : null,
+    m2Terreno: body.m2Terreno ? Number(body.m2Terreno) : null,
+    m2Construccion: body.m2Construccion ? Number(body.m2Construccion) : null,
+    // Solo aplica de verdad cuando categoria==='otro' — quién captó la
+    // propiedad, para poder preguntarle si sigue disponible.
+    captadorNombre: (body.captadorNombre || '').trim(),
+    captadorTelefono: (body.captadorTelefono || '').trim(),
+    estado: ['disponible', 'vendido', 'no_disponible'].includes(body.estado) ? body.estado : 'disponible',
+  };
+}
+
+// Corre matcheaPropiedad contra los requerimientos guardados DEL MISMO
+// agente (a diferencia de matchearContraTodosLosAgentes, acá no cruza entre
+// agentes — el inventario es personal) y genera una alerta por cada match.
+function matchearInventarioConRequerimientos(item, agenteId) {
+  if (item.estado !== 'disponible') return [];
+  const candidatos = leerRequerimientos(agenteId).filter(
+    (r) => r.tipo === item.tipo && r.operacion === item.operacion
+  );
+  const matches = candidatos.filter((r) => matcheaPropiedad({ ...item }, r));
+  return matches.map((r) =>
+    guardarAlerta(agenteId, {
+      tipo: 'match_inventario',
+      origen: item.categoria === 'otro' ? 'inventario-otro' : 'inventario-propio',
+      propiedad: { id: item.id, titulo: item.titulo, precio: item.precio, zona: item.zona, tipo: item.tipo, operacion: item.operacion },
+      requerimiento: { id: r.id, cliente: r.cliente, telefono: r.telefono, zona: r.zona, precioMin: r.precioMin, precioMax: r.precioMax },
+    })
+  );
+}
+
 // ---------- Feedback de agentes ----------
 // Un solo archivo compartido (no por agente, a diferencia de requerimientos/
 // alertas) porque José Luis lo revisa todo junto en el panel admin.
@@ -2348,6 +2414,82 @@ async function manejarRequest(req, res) {
     return json(res, 200, { propiedad, matches: matches.length, alertas });
   }
 
+  // ---------- Inventario propio ----------
+  if (url.pathname === '/api/inventario' && req.method === 'GET') {
+    return json(res, 200, leerInventario(agenteId));
+  }
+  if (url.pathname === '/api/inventario' && req.method === 'POST') {
+    const body = await leerBody(req);
+    const nuevo = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      creado: new Date().toISOString(),
+      ultimaConfirmacion: new Date().toISOString(),
+      comentarios: [],
+      fotos: [],
+      ...camposInventario(body),
+    };
+    const lista = leerInventario(agenteId);
+    lista.unshift(nuevo);
+    guardarInventario(lista, agenteId);
+    const alertas = matchearInventarioConRequerimientos(nuevo, agenteId);
+    return json(res, 200, { item: nuevo, matches: alertas.length });
+  }
+
+  const mInventarioConfirmar = url.pathname.match(/^\/api\/inventario\/([^/]+)\/confirmar$/);
+  if (mInventarioConfirmar && req.method === 'POST') {
+    const [, id] = mInventarioConfirmar;
+    const lista = leerInventario(agenteId);
+    const idx = lista.findIndex((i) => i.id === id);
+    if (idx === -1) return json(res, 404, { error: 'No existe ese ítem de inventario.' });
+    lista[idx] = { ...lista[idx], ultimaConfirmacion: new Date().toISOString() };
+    guardarInventario(lista, agenteId);
+    return json(res, 200, lista[idx]);
+  }
+
+  const mInventarioComentarios = url.pathname.match(/^\/api\/inventario\/([^/]+)\/comentarios$/);
+  if (mInventarioComentarios && req.method === 'POST') {
+    const [, id] = mInventarioComentarios;
+    const body = await leerBody(req);
+    const texto = (body.texto || '').trim();
+    if (!texto) return json(res, 400, { error: 'Falta el texto del comentario.' });
+    const lista = leerInventario(agenteId);
+    const idx = lista.findIndex((i) => i.id === id);
+    if (idx === -1) return json(res, 404, { error: 'No existe ese ítem de inventario.' });
+    const comentarios = lista[idx].comentarios || [];
+    comentarios.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), texto, fecha: new Date().toISOString() });
+    lista[idx] = { ...lista[idx], comentarios };
+    guardarInventario(lista, agenteId);
+    return json(res, 200, lista[idx]);
+  }
+  if (mInventarioComentarios && req.method === 'DELETE') {
+    const [, id] = mInventarioComentarios;
+    const body = await leerBody(req);
+    const lista = leerInventario(agenteId);
+    const idx = lista.findIndex((i) => i.id === id);
+    if (idx === -1) return json(res, 404, { error: 'No existe ese ítem de inventario.' });
+    lista[idx] = { ...lista[idx], comentarios: (lista[idx].comentarios || []).filter((c) => c.id !== body.id) };
+    guardarInventario(lista, agenteId);
+    return json(res, 200, lista[idx]);
+  }
+
+  if (url.pathname.startsWith('/api/inventario/') && req.method === 'PUT') {
+    const id = url.pathname.split('/').pop();
+    const lista = leerInventario(agenteId);
+    const idx = lista.findIndex((i) => i.id === id);
+    if (idx === -1) return json(res, 404, { error: 'No existe ese ítem de inventario.' });
+    const body = await leerBody(req);
+    const actualizado = { ...lista[idx], ...camposInventario(body) };
+    lista[idx] = actualizado;
+    guardarInventario(lista, agenteId);
+    const alertas = matchearInventarioConRequerimientos(actualizado, agenteId);
+    return json(res, 200, { item: actualizado, matches: alertas.length });
+  }
+  if (url.pathname.startsWith('/api/inventario/') && req.method === 'DELETE') {
+    const id = url.pathname.split('/').pop();
+    guardarInventario(leerInventario(agenteId).filter((i) => i.id !== id), agenteId);
+    return json(res, 200, { ok: true });
+  }
+
   if (url.pathname === '/api/alertas' && req.method === 'GET') {
     return json(res, 200, leerAlertas(agenteId));
   }
@@ -2479,6 +2621,57 @@ process.on('unhandledRejection', (err) => {
   console.error('Promesa rechazada sin atrapar (el servidor sigue funcionando):', err);
 });
 
+// Recorre el inventario de TODOS los agentes y genera una alerta de
+// "reconfirmar disponibilidad" para cada ítem disponible que lleve más de
+// DIAS_RECONFIRMAR_INVENTARIO sin confirmarse — para "otro" (captación de
+// otro agente) el mensaje sugiere preguntarle al captador; para "mio" solo
+// pide confirmar. Guarda `ultimaAlertaVencimiento` en el propio ítem para no
+// generar la misma alerta de vuelta cada vez que corre este chequeo.
+const DIAS_RECONFIRMAR_INVENTARIO = 30;
+
+function chequearReconfirmarInventario() {
+  let archivos;
+  try {
+    archivos = fs.readdirSync(DATA_DIR).filter((f) => /^inventario-.+\.json$/.test(f));
+  } catch {
+    return;
+  }
+  for (const archivo of archivos) {
+    const agenteId = archivo.replace(/^inventario-/, '').replace(/\.json$/, '');
+    const ruta = path.join(DATA_DIR, archivo);
+    let lista;
+    try {
+      lista = JSON.parse(fs.readFileSync(ruta, 'utf8'));
+    } catch {
+      continue;
+    }
+    let cambio = false;
+    for (const item of lista) {
+      if (item.estado !== 'disponible' || !item.ultimaConfirmacion) continue;
+      const diasSinConfirmar = (Date.now() - new Date(item.ultimaConfirmacion).getTime()) / 86400000;
+      if (diasSinConfirmar < DIAS_RECONFIRMAR_INVENTARIO) continue;
+      const diasDesdeUltimaAlerta = item.ultimaAlertaVencimiento
+        ? (Date.now() - new Date(item.ultimaAlertaVencimiento).getTime()) / 86400000
+        : Infinity;
+      if (diasDesdeUltimaAlerta < DIAS_RECONFIRMAR_INVENTARIO) continue;
+
+      const sugerencia =
+        item.categoria === 'otro'
+          ? `Preguntale a ${item.captadorNombre || 'el captador'}${item.captadorTelefono ? ' (' + item.captadorTelefono + ')' : ''} si sigue disponible.`
+          : 'Confirmá si sigue disponible.';
+      guardarAlerta(agenteId, {
+        tipo: 'reconfirmar_disponibilidad',
+        origen: item.categoria === 'otro' ? 'inventario-otro' : 'inventario-propio',
+        propiedad: { id: item.id, titulo: item.titulo, precio: item.precio, zona: item.zona, tipo: item.tipo, operacion: item.operacion },
+        mensaje: `Sin confirmar hace ${Math.floor(diasSinConfirmar)} día(s). ${sugerencia}`,
+      });
+      item.ultimaAlertaVencimiento = new Date().toISOString();
+      cambio = true;
+    }
+    if (cambio) fs.writeFileSync(ruta, JSON.stringify(lista, null, 2));
+  }
+}
+
 // Revisa si ya pasaron MOBILIARIO_RESYNC_HORAS desde la última sincronización
 // completa y, si es así, dispara una nueva (no bloquea nada — fire and
 // forget). C21/RE/MAX/BienInmuebles no necesitan esto porque se leen en vivo
@@ -2513,4 +2706,9 @@ server.listen(PORT, () => {
   // GHL_LOCATIONS no está configurado (ver leerLocationsGHL).
   chequearResyncRequerimientosGHL();
   setInterval(chequearResyncRequerimientosGHL, 60 * 60 * 1000);
+
+  // Reconfirmar disponibilidad del inventario — no necesita frecuencia de
+  // hora en hora, se revisa una vez por día.
+  chequearReconfirmarInventario();
+  setInterval(chequearReconfirmarInventario, 24 * 60 * 60 * 1000);
 });
