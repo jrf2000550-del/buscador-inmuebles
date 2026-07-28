@@ -699,6 +699,15 @@ $('#btnUsarKey').addEventListener('click', () => {
   $('#tabRegistro').classList.remove('activo');
 });
 
+// PWA — registra el service worker para que el navegador ofrezca "instalar"
+// la app de verdad (con manifest.json solo, sin esto, queda como un simple
+// acceso directo con ícono, no como app instalable).
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
+
 // Guarda la key recibida (de login, registro o pegada a mano) y entra a la
 // app — recarga para arrancar todo limpio, mismo criterio que "Salir".
 function entrarConKey(key) {
