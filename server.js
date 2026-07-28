@@ -294,6 +294,74 @@ async function resolverFotosDrive(carpetaUrl) {
   }
 }
 
+async function listarSubcarpetasDrive(raizId) {
+  if (!process.env.GOOGLE_API_KEY) return [];
+  try {
+    const q = encodeURIComponent(`'${raizId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+    const resp = await fetch(
+      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=200&key=${process.env.GOOGLE_API_KEY}`
+    );
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return data.files || [];
+  } catch {
+    return [];
+  }
+}
+
+// Sincronización de un toque: el agente conecta UNA sola carpeta raíz de su
+// Drive (ya organizada por él, una subcarpeta = una propiedad) y acá se crea
+// o actualiza un ítem de inventario por cada subcarpeta. El match es por
+// driveFolderId (no por título) para que, si el agente edita el título/
+// precio/zona a mano después, una resincronización no le pise esos datos —
+// solo refresca las fotos de los ítems ya creados.
+async function sincronizarInventarioDesdeDrive(agenteId) {
+  const agente = leerAgentes().find((a) => a.id === agenteId);
+  const raizId = agente && idCarpetaDrive(agente.driveRaizUrl);
+  if (!raizId) return { error: 'No hay una carpeta raíz de Drive configurada.' };
+  const subcarpetas = await listarSubcarpetasDrive(raizId);
+  const lista = leerInventario(agenteId);
+  let creados = 0;
+  let actualizados = 0;
+  for (const carpeta of subcarpetas) {
+    const carpetaUrl = `https://drive.google.com/drive/folders/${carpeta.id}`;
+    const fotos = await resolverFotosDrive(carpetaUrl);
+    const idx = lista.findIndex((i) => i.driveFolderId === carpeta.id);
+    if (idx === -1) {
+      lista.unshift({
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        creado: new Date().toISOString(),
+        ultimaConfirmacion: new Date().toISOString(),
+        comentarios: [],
+        categoria: 'mio',
+        titulo: carpeta.name,
+        descripcion: '',
+        operacion: 'venta',
+        tipo: 'casa',
+        precio: null,
+        zona: '',
+        direccion: '',
+        dormitorios: null,
+        banos: null,
+        m2Terreno: null,
+        m2Construccion: null,
+        captadorNombre: '',
+        captadorTelefono: '',
+        estado: 'disponible',
+        driveFolderId: carpeta.id,
+        fotosCarpetaDrive: carpetaUrl,
+        fotos,
+      });
+      creados++;
+    } else {
+      lista[idx] = { ...lista[idx], fotos };
+      actualizados++;
+    }
+  }
+  guardarInventario(lista, agenteId);
+  return { ok: true, carpetas: subcarpetas.length, creados, actualizados };
+}
+
 // Corre matcheaPropiedad contra los requerimientos guardados DEL MISMO
 // agente (a diferencia de matchearContraTodosLosAgentes, acá no cruza entre
 // agentes — el inventario es personal) y genera una alerta por cada match.
@@ -2068,7 +2136,7 @@ async function manejarRequest(req, res) {
   if (url.pathname === '/api/whoami' && req.method === 'GET') {
     return json(res, 200, {
       requiereAuth,
-      agente: agente ? { id: agente.id, nombre: agente.nombre, trial: estadoTrial(agente), telefonoContacto: agente.telefonoContacto || '' } : null,
+      agente: agente ? { id: agente.id, nombre: agente.nombre, trial: estadoTrial(agente), telefonoContacto: agente.telefonoContacto || '', driveRaizUrl: agente.driveRaizUrl || '' } : null,
     });
   }
 
@@ -2474,22 +2542,34 @@ async function manejarRequest(req, res) {
     return json(res, 200, { propiedad, matches: matches.length, alertas });
   }
 
-  // Perfil del propio agente (hoy solo el teléfono de contacto que se
-  // muestra en su vitrina pública) — separado de camposRequerimiento/
-  // camposInventario porque esto edita al agente mismo, no un requerimiento.
+  // Perfil del propio agente (teléfono de contacto de la vitrina, carpeta
+  // raíz de Drive) — separado de camposRequerimiento/camposInventario
+  // porque esto edita al agente mismo, no un requerimiento. Solo pisa los
+  // campos que vienen en el body: como el panel de "Mi vitrina" guarda el
+  // teléfono y el de Drive por separado, un PUT no debe borrar el otro.
   if (url.pathname === '/api/perfil' && req.method === 'PUT') {
     const body = await leerBody(req);
     const lista = leerAgentes();
     const idx = lista.findIndex((a) => a.id === agenteId);
     if (idx === -1) return json(res, 404, { error: 'No existe el agente.' });
-    lista[idx] = { ...lista[idx], telefonoContacto: (body.telefonoContacto || '').trim() };
+    const actualizado = { ...lista[idx] };
+    if (body.telefonoContacto !== undefined) actualizado.telefonoContacto = String(body.telefonoContacto).trim();
+    if (body.driveRaizUrl !== undefined) actualizado.driveRaizUrl = String(body.driveRaizUrl).trim();
+    lista[idx] = actualizado;
     guardarAgentes(lista);
-    return json(res, 200, { ok: true, telefonoContacto: lista[idx].telefonoContacto });
+    return json(res, 200, { ok: true, telefonoContacto: actualizado.telefonoContacto || '', driveRaizUrl: actualizado.driveRaizUrl || '' });
   }
 
   // ---------- Inventario propio ----------
   if (url.pathname === '/api/inventario' && req.method === 'GET') {
     return json(res, 200, leerInventario(agenteId));
+  }
+  // Sincroniza desde la carpeta raíz de Drive conectada en el perfil: crea
+  // o actualiza un ítem por cada subcarpeta (una propiedad por subcarpeta).
+  if (url.pathname === '/api/inventario/sincronizar-drive' && req.method === 'POST') {
+    const resultado = await sincronizarInventarioDesdeDrive(agenteId);
+    if (resultado.error) return json(res, 400, resultado);
+    return json(res, 200, resultado);
   }
   if (url.pathname === '/api/inventario' && req.method === 'POST') {
     const body = await leerBody(req);

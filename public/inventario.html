@@ -142,6 +142,16 @@
       <p id="msgTelefono" class="sub" style="display:none; color: var(--ok); margin-top:6px"></p>
     </div>
 
+    <div class="panel" id="panelDrive">
+      <h2>📁 Conectar mi Drive</h2>
+      <p class="sub">Pegá el link de la carpeta principal de tu Drive — la que tiene adentro una subcarpeta por cada propiedad, ya organizada. Sincronizás y la app crea o actualiza un ítem de inventario por cada subcarpeta, con sus fotos. Después completás precio/zona/tipo de cada uno.</p>
+      <div class="fila-telefono" style="margin-top:12px">
+        <label>Carpeta raíz de tu Drive <input id="campoDriveRaiz" placeholder="Pegá el link de la carpeta principal"></label>
+        <button type="button" class="chico" id="btnSincronizarDrive">Guardar y sincronizar</button>
+      </div>
+      <p id="msgDrive" class="sub" style="display:none; margin-top:6px"></p>
+    </div>
+
     <div class="panel">
       <h2 id="tituloForm">Agregar</h2>
       <form id="formInv">
@@ -269,6 +279,7 @@ async function iniciar() {
     $('#linkVitrina').value = link;
     $('#abrirVitrina').href = link;
     $('#campoTelefonoContacto').value = quien.agente.telefonoContacto || '';
+    $('#campoDriveRaiz').value = quien.agente.driveRaizUrl || '';
     cargarInventario();
   } catch {}
 }
@@ -295,6 +306,37 @@ async function refrescarFotos(id) {
   await apiFetch('/api/inventario/' + id + '/refrescar-fotos', { method: 'POST' });
   cargarInventario();
 }
+
+$('#btnSincronizarDrive').addEventListener('click', async () => {
+  const btn = $('#btnSincronizarDrive');
+  const original = btn.textContent;
+  btn.textContent = 'Sincronizando...';
+  btn.disabled = true;
+  $('#msgDrive').style.display = 'none';
+  try {
+    await apiFetch('/api/perfil', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ driveRaizUrl: $('#campoDriveRaiz').value.trim() }),
+    });
+    const resp = await apiFetch('/api/inventario/sincronizar-drive', { method: 'POST' });
+    const data = await resp.json();
+    $('#msgDrive').style.display = 'block';
+    if (data.error) {
+      $('#msgDrive').style.color = 'var(--danger)';
+      $('#msgDrive').textContent = data.error;
+    } else {
+      $('#msgDrive').style.color = 'var(--ok)';
+      $('#msgDrive').textContent = `Listo: ${data.carpetas} carpeta(s) encontradas — ${data.creados} nueva(s), ${data.actualizados} actualizada(s).`;
+      cargarInventario();
+    }
+  } catch {
+    $('#msgDrive').style.display = 'block';
+    $('#msgDrive').style.color = 'var(--danger)';
+    $('#msgDrive').textContent = 'Error al sincronizar — intentá de nuevo.';
+  }
+  btn.textContent = original;
+  btn.disabled = false;
+});
 
 $('#campoCategoria').addEventListener('change', (e) => {
   const esOtro = e.target.value === 'otro';

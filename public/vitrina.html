@@ -63,6 +63,11 @@
 
   .vacio { color: var(--muted); text-align: center; padding: 60px 20px; font-size: 14px; }
   .cargando { color: var(--muted); text-align: center; padding: 60px 20px; font-size: 14px; }
+
+  .seccion { margin-bottom: 32px; }
+  .seccion h2 { font-size: 15px; font-weight: 800; margin: 0 0 14px; display: flex; align-items: center; gap: 9px; }
+  .seccion h2::before { content: ''; width: 3px; height: 12px; border-radius: 3px; background: linear-gradient(180deg, var(--accent), var(--accent-2)); }
+  .seccion h2 .cant { color: var(--muted); font-weight: 600; font-size: 12.5px; }
 </style>
 </head>
 <body>
@@ -78,6 +83,14 @@
 <script>
 const $ = (s) => document.querySelector(s);
 const agenteId = new URLSearchParams(location.search).get('a');
+
+const NOMBRE_TIPO = {
+  casa: 'Casas', departamento: 'Departamentos', terreno: 'Terrenos', 'terreno-comercial': 'Terrenos comerciales',
+  quinta: 'Quintas / casas de campo', local: 'Locales comerciales', oficina: 'Oficinas', edificio: 'Edificios',
+  deposito: 'Depósitos / galpones', tinglado: 'Tinglados', rural: 'Propiedades rurales', rancho: 'Ranchos',
+  agricolas: 'Agrícolas', ganaderas: 'Ganaderas', cochera: 'Cocheras', hotel: 'Hoteles', colegio: 'Colegios',
+  proyecto: 'Proyectos (preventa)',
+};
 
 function fmtPrecio(n) {
   return n ? 'U$S ' + Number(n).toLocaleString('es-BO') : 'Consultar precio';
@@ -153,8 +166,16 @@ async function iniciar() {
       $('#contenido').textContent = 'Todavía no hay propiedades disponibles en este inventario.';
       return;
     }
-    $('#contenido').className = 'grid';
-    $('#contenido').innerHTML = data.propiedades.map((p) => tarjeta(p, data.agente.telefonoContacto, data.agente.nombre)).join('');
+    const porTipo = {};
+    for (const p of data.propiedades) {
+      (porTipo[p.tipo] = porTipo[p.tipo] || []).push(p);
+    }
+    $('#contenido').className = '';
+    $('#contenido').innerHTML = Object.keys(porTipo).map((tipo) => `
+      <div class="seccion">
+        <h2>${NOMBRE_TIPO[tipo] || tipo} <span class="cant">(${porTipo[tipo].length})</span></h2>
+        <div class="grid">${porTipo[tipo].map((p) => tarjeta(p, data.agente.telefonoContacto, data.agente.nombre)).join('')}</div>
+      </div>`).join('');
   } catch {
     $('#subHeader').textContent = 'Error al cargar.';
     $('#contenido').className = 'vacio';
