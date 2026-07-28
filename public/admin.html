@@ -114,6 +114,13 @@
       <div id="tablaAgentes"></div>
     </div>
     <div class="panel">
+      <h2>Feedback de agentes <span id="badgeFeedback" class="badge nueva" style="display:none; margin-left:4px"></span></h2>
+      <p style="color:var(--muted); font-size:13px; margin:0 0 12px">
+        Comentarios que los agentes dejan desde el botón "💬 Feedback" de la app.
+      </p>
+      <div id="listaFeedback"></div>
+    </div>
+    <div class="panel">
       <h2>Alertas de match <span id="badgeAlertas" class="badge nueva" style="display:none; margin-left:4px"></span></h2>
       <p style="color:var(--muted); font-size:13px; margin:0 0 12px">
         Se generan solas cuando una propiedad nueva (cargada a mano o detectada en Mobiliario App)
@@ -160,8 +167,40 @@ async function entrar() {
   }
   $('#gate').style.display = 'none';
   $('#app').style.display = 'block';
-  await Promise.all([cargarVisitas(), cargarAgentes(), cargarAlertas()]);
+  await Promise.all([cargarVisitas(), cargarAgentes(), cargarAlertas(), cargarFeedback()]);
   return true;
+}
+
+async function cargarFeedback() {
+  const lista = await (await adminFetch('/api/admin/feedback')).json();
+  const noLeidos = lista.filter((f) => !f.leido).length;
+  const badge = $('#badgeFeedback');
+  if (noLeidos) {
+    badge.style.display = 'inline-block';
+    badge.textContent = noLeidos + ' sin leer';
+  } else {
+    badge.style.display = 'none';
+  }
+  if (!lista.length) {
+    $('#listaFeedback').innerHTML = '<p class="vacio">Todavía no hay feedback de agentes.</p>';
+    return;
+  }
+  $('#listaFeedback').innerHTML = lista.map((f) => `
+    <div class="alerta" style="${f.leido ? 'opacity:.55' : ''}">
+      <div class="fila1">
+        <span class="titulo">${f.agenteNombre}</span>
+        ${f.leido ? '' : '<span class="badge nueva">nuevo</span>'}
+      </div>
+      <div class="detalle">${f.texto}</div>
+      <div class="detalle" style="color:var(--muted-2)">${new Date(f.fecha).toLocaleString('es-BO')}</div>
+      ${f.leido ? '' : `<div class="acciones"><button type="button" class="chico fantasma" onclick="marcarFeedbackLeido('${f.id}')">Marcar como leído</button></div>`}
+    </div>
+  `).join('');
+}
+
+async function marcarFeedbackLeido(id) {
+  await adminFetch(`/api/admin/feedback/${id}/leido`, { method: 'POST' });
+  cargarFeedback();
 }
 
 $('#btnEntrar').addEventListener('click', async () => {
@@ -196,7 +235,7 @@ async function cargarAgentes() {
   }
   $('#tablaAgentes').innerHTML = `
     <table>
-      <thead><tr><th>Nombre</th><th>Email</th><th>Origen</th><th>Registrado</th><th>Requerimientos</th><th>Estado</th><th>GHL</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>Email</th><th>Origen</th><th>Registrado</th><th>Requerimientos</th><th>Estado</th><th>Prueba gratis</th><th>GHL</th><th></th></tr></thead>
       <tbody>
         ${agentes.map((a) => `
           <tr>
@@ -206,6 +245,7 @@ async function cargarAgentes() {
             <td>${new Date(a.creado).toLocaleDateString('es-BO', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
             <td>${a.cantidadRequerimientos}</td>
             <td><span class="badge ${a.activo ? 'activo' : 'revocado'}">${a.activo ? 'Activo' : 'Revocado'}</span></td>
+            <td>${!a.trial.aplica ? '<span class="badge activo">Cliente propio</span>' : a.trial.vencido ? '<span class="badge revocado">Vencido</span>' : `<span class="badge activo">${a.trial.diasRestantes} día(s)</span>`}</td>
             <td>${a.ghlConectado ? `<span class="badge activo" title="${a.ghlLocationId}">Conectado</span>` : '<span class="badge revocado">Sin conectar</span>'}</td>
             <td style="white-space:nowrap">
               <button type="button" class="chico ${a.activo ? 'fantasma' : ''}" onclick="toggleAgente('${a.id}', ${a.activo})">${a.activo ? 'Revocar' : 'Reactivar'}</button>

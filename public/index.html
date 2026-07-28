@@ -192,6 +192,16 @@
   .req .detalle { font-size: 12px; color: var(--muted); margin: 5px 0 10px; line-height: 1.5; }
   .req .acciones { display: flex; gap: 6px; flex-wrap: wrap; }
   .req .acciones button { padding: 6px 12px; font-size: 12px; box-shadow: none; }
+  .comentarios-req { margin-top: 8px; font-size: 12px; }
+  .comentarios-req summary { cursor: pointer; color: var(--muted); user-select: none; }
+  .comentarios-req summary:hover { color: var(--text); }
+  .lista-comentarios { margin: 8px 0; display: grid; gap: 6px; }
+  .comentario-item { display: flex; align-items: center; gap: 6px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 6px 8px; }
+  .comentario-item span:first-child { flex: 1; color: var(--text); }
+  .comentario-fecha { color: var(--muted); font-size: 10.5px; white-space: nowrap; }
+  .agregar-comentario { display: flex; gap: 6px; margin-top: 4px; }
+  .agregar-comentario input { flex: 1; font-size: 12px; padding: 6px 8px; }
+  .agregar-comentario button { padding: 6px 10px; font-size: 12px; box-shadow: none; }
   .req .acciones button:hover { transform: none; }
   .req .borrar { background: transparent; color: var(--muted-2); border: 1px solid var(--border); }
   .req .borrar:hover { color: var(--danger); border-color: var(--danger); filter: none; }
@@ -332,6 +342,17 @@
   #gate .error { color: var(--danger); font-size: 13px; display: none; }
   #gate .error.visible { display: block; }
 
+  .modal-overlay {
+    position: fixed; inset: 0; z-index: 55; display: none; align-items: center; justify-content: center; padding: 20px;
+    background: rgba(0,0,0,.55);
+  }
+  .modal-caja {
+    background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: 24px; max-width: 420px; width: 100%; display: grid; gap: 12px; box-shadow: var(--shadow-lg);
+  }
+  .modal-caja h3 { margin: 0; font-family: var(--font-display); font-size: 17px; font-weight: 800; letter-spacing: -.01em; }
+  .modal-acciones { display: flex; justify-content: flex-end; gap: 8px; }
+
   .auth-tabs { display: flex; gap: 4px; background: var(--bg-elevated); border-radius: var(--radius-xs); padding: 4px; }
   .auth-tab {
     flex: 1; background: transparent; color: var(--muted); font-weight: 700; font-size: 13px;
@@ -393,6 +414,18 @@
     </form>
   </div>
 </div>
+<div id="modalFeedback" class="modal-overlay" style="display:none">
+  <div class="modal-caja">
+    <h3>Dejar feedback</h3>
+    <p class="sub" style="margin:0">¿Qué mejorarías de la app? Llega directo a José Luis.</p>
+    <textarea id="feedbackTexto" rows="4" placeholder="Contanos qué te gustaría que mejoremos..."></textarea>
+    <p id="feedbackMsg" class="sub" style="display:none; color: var(--ok); margin:0"></p>
+    <div class="modal-acciones">
+      <button type="button" class="btn-fantasma" id="btnCerrarFeedback">Cancelar</button>
+      <button type="button" id="btnEnviarFeedback">Enviar</button>
+    </div>
+  </div>
+</div>
 <header>
   <div class="logo">
     <div class="icono">
@@ -409,6 +442,7 @@
   </div>
   <div class="sesion" id="sesionInfo" style="display:none"></div>
 </header>
+<p id="avisoTrial" class="aviso" style="display:none; margin: 0 24px 0"></p>
 <main>
   <aside class="lado">
     <h2>Nuevo requerimiento</h2>
@@ -703,11 +737,27 @@ async function iniciarSesion() {
   if (quien.agente) {
     $('#sesionInfo').style.display = 'flex';
     $('#sesionInfo').innerHTML =
-      'Sesión: <strong>' + quien.agente.nombre + '</strong> <button type="button" class="btn-secundario" id="btnSalir">Salir</button>';
+      'Sesión: <strong>' + quien.agente.nombre + '</strong> ' +
+      '<button type="button" class="btn-secundario" id="btnFeedback">💬 Feedback</button> ' +
+      '<button type="button" class="btn-secundario" id="btnSalir">Salir</button>';
     $('#btnSalir').addEventListener('click', () => {
       localStorage.removeItem('buscadorApiKey');
       location.reload();
     });
+    $('#btnFeedback').addEventListener('click', () => { $('#modalFeedback').style.display = 'flex'; });
+
+    // Aviso de prueba gratuita — nunca bloquea, solo informa (José Luis
+    // revoca acceso a mano desde /admin.html si corresponde).
+    const trial = quien.agente.trial;
+    if (trial && trial.aplica) {
+      if (trial.vencido) {
+        $('#avisoTrial').style.display = 'block';
+        $('#avisoTrial').textContent = 'Tu prueba gratuita de 2 semanas terminó. Escribinos para seguir usando la app sin interrupciones.';
+      } else if (trial.diasRestantes <= 3) {
+        $('#avisoTrial').style.display = 'block';
+        $('#avisoTrial').textContent = `Quedan ${trial.diasRestantes} día(s) de tu prueba gratuita.`;
+      }
+    }
   } else {
     // Modo abierto (todavía nadie se registró): igual se ofrece crear
     // cuenta desde el header, sin bloquear el uso mientras tanto.
@@ -1111,6 +1161,50 @@ function resumenEnviados(r) {
   return `<br>📤 ${enviados.length} enviada(s): ${titulos.join(', ')}${extra}`;
 }
 
+// Fecha corta ("27 jul") para no ocupar espacio en la lista lateral.
+function fechaCorta(iso) {
+  return new Date(iso).toLocaleDateString('es-BO', { day: 'numeric', month: 'short' });
+}
+
+function bloqueComentarios(r) {
+  const comentarios = r.comentarios || [];
+  return `
+    <details class="comentarios-req" data-req="${r.id}">
+      <summary>💬 ${comentarios.length ? comentarios.length + ' comentario(s)' : 'Agregar comentario'}</summary>
+      ${comentarios.length ? `<div class="lista-comentarios">${comentarios.map((c) => `
+        <p class="comentario-item">
+          <span>${c.texto}</span>
+          <span class="comentario-fecha">${fechaCorta(c.fecha)}</span>
+          <button type="button" class="quitar-manual" title="Borrar" onclick="quitarComentario('${r.id}','${c.id}')">×</button>
+        </p>`).join('')}</div>` : ''}
+      <div class="agregar-comentario">
+        <input type="text" id="comentarioInput-${r.id}" placeholder="Ej: llamó, quiere ver el sábado…">
+        <button type="button" onclick="agregarComentario('${r.id}')">Agregar</button>
+      </div>
+    </details>`;
+}
+
+async function agregarComentario(id) {
+  const input = $('#comentarioInput-' + id);
+  const texto = input.value.trim();
+  if (!texto) return;
+  await apiFetch('/api/requerimientos/' + id + '/comentarios', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ texto }),
+  });
+  cargarRequerimientos();
+}
+
+async function quitarComentario(reqId, comentarioId) {
+  await apiFetch('/api/requerimientos/' + reqId + '/comentarios', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: comentarioId }),
+  });
+  cargarRequerimientos();
+}
+
 async function cargarRequerimientos() {
   const lista = await (await apiFetch('/api/requerimientos')).json();
   $('#listaReq').innerHTML = lista.length
@@ -1123,6 +1217,7 @@ async function cargarRequerimientos() {
           <button class="editar" onclick='editarRequerimiento(${JSON.stringify(r)})'>Editar</button>
           <button class="borrar" onclick="borrar('${r.id}')">Borrar</button>
         </div>
+        ${bloqueComentarios(r)}
       </div>`).join('')
     : '<p class="vacio" style="padding:20px 0; font-size:13px">Todavía no hay requerimientos.</p>';
 }
@@ -1297,6 +1392,27 @@ async function marcarEnviada(i) {
 
 $('#btnInterpretar').addEventListener('click', () => {
   interpretarPedido($('#pedidoTexto').value);
+});
+
+$('#btnCerrarFeedback').addEventListener('click', () => {
+  $('#modalFeedback').style.display = 'none';
+  $('#feedbackMsg').style.display = 'none';
+});
+$('#btnEnviarFeedback').addEventListener('click', async () => {
+  const texto = $('#feedbackTexto').value.trim();
+  if (!texto) return;
+  await apiFetch('/api/feedback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ texto }),
+  });
+  $('#feedbackTexto').value = '';
+  $('#feedbackMsg').style.display = 'block';
+  $('#feedbackMsg').textContent = '¡Gracias! Ya le llegó a José Luis.';
+  setTimeout(() => {
+    $('#modalFeedback').style.display = 'none';
+    $('#feedbackMsg').style.display = 'none';
+  }, 1500);
 });
 
 $('#selMoneda').addEventListener('change', (e) => {

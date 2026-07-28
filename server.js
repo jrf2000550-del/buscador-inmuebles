@@ -218,6 +218,41 @@ function guardarRequerimientos(lista, agenteId) {
   fs.writeFileSync(archivoRequerimientos(agenteId), JSON.stringify(lista, null, 2));
 }
 
+// ---------- Feedback de agentes ----------
+// Un solo archivo compartido (no por agente, a diferencia de requerimientos/
+// alertas) porque José Luis lo revisa todo junto en el panel admin.
+
+const FEEDBACK_FILE = path.join(DATA_DIR, 'feedback.json');
+
+function leerFeedback() {
+  try {
+    return JSON.parse(fs.readFileSync(FEEDBACK_FILE, 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
+function guardarFeedbackLista(lista) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(FEEDBACK_FILE, JSON.stringify(lista, null, 2));
+}
+
+// ---------- Prueba gratuita (2 semanas desde el registro) ----------
+// Solo aviso — José Luis decide manualmente cuándo revocar acceso a quien no
+// pagó (mismo botón de activar/revocar que ya existe), no hay bloqueo
+// automático. Ingrid y Jose Parejas quedan afuera del conteo: son clientes
+// reales suyos, no agentes de la prueba pública, y sus cuentas ya tenían más
+// de 2 semanas cuando se armó esto.
+const DIAS_PRUEBA_GRATIS = 14;
+const AGENTES_SIN_TRIAL = new Set(['af7749fc', '00753b8a']); // Ingrid Cuellar, Jose Parejas
+
+function estadoTrial(agente) {
+  if (AGENTES_SIN_TRIAL.has(agente.id)) return { aplica: false, diasRestantes: null, vencido: false };
+  const diasTranscurridos = Math.floor((Date.now() - new Date(agente.creado).getTime()) / 86400000);
+  const diasRestantes = DIAS_PRUEBA_GRATIS - diasTranscurridos;
+  return { aplica: true, diasRestantes, vencido: diasRestantes <= 0 };
+}
+
 // ---------- Almacenamiento de alertas de match ----------
 // Se generan cuando una propiedad nueva (cargada a mano, sincronizada desde
 // GHL indirectamente vía requerimiento, o detectada en la sincronización de
@@ -1105,6 +1140,7 @@ async function sincronizarRequerimientosGHL() {
               id: existente ? existente.id : Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
               creado: existente ? existente.creado : new Date().toISOString(),
               enviados: existente ? existente.enviados || [] : [],
+              comentarios: existente ? existente.comentarios || [] : [],
               origen: 'ghl',
               contactId: c.id,
               locationId: loc.locationId,
@@ -1937,7 +1973,7 @@ async function manejarRequest(req, res) {
   if (url.pathname === '/api/whoami' && req.method === 'GET') {
     return json(res, 200, {
       requiereAuth,
-      agente: agente ? { id: agente.id, nombre: agente.nombre } : null,
+      agente: agente ? { id: agente.id, nombre: agente.nombre, trial: estadoTrial(agente) } : null,
     });
   }
 
@@ -2029,6 +2065,7 @@ async function manejarRequest(req, res) {
         // ADMIN_KEY) — con saber que está conectado alcanza para la tabla.
         ghlConectado: !!(a.ghlConfig && a.ghlConfig.locationId),
         ghlLocationId: a.ghlConfig?.locationId || null,
+        trial: estadoTrial(a),
       }));
       agentesConDatos.sort((x, y) => new Date(y.creado) - new Date(x.creado));
       return json(res, 200, agentesConDatos);
@@ -2103,6 +2140,20 @@ async function manejarRequest(req, res) {
       const [, agenteIdAlerta, id] = mAlerta;
       const ok = marcarAlertaLeida(agenteIdAlerta, id);
       return json(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'No existe esa alerta' });
+    }
+
+    if (url.pathname === '/api/admin/feedback' && req.method === 'GET') {
+      return json(res, 200, leerFeedback());
+    }
+    const mFeedbackLeido = url.pathname.match(/^\/api\/admin\/feedback\/([^/]+)\/leido$/);
+    if (mFeedbackLeido && req.method === 'POST') {
+      const [, id] = mFeedbackLeido;
+      const lista = leerFeedback();
+      const idx = lista.findIndex((f) => f.id === id);
+      if (idx === -1) return json(res, 404, { error: 'No existe ese feedback' });
+      lista[idx].leido = true;
+      guardarFeedbackLista(lista);
+      return json(res, 200, { ok: true });
     }
 
     if (url.pathname === '/api/admin/visitas' && req.method === 'GET') {
@@ -2196,6 +2247,37 @@ async function manejarRequest(req, res) {
     return json(res, 200, lista[idx]);
   }
 
+  // Historial de comentarios por lead (seguimiento libre — "llamé y no
+  // contestó", "quiere ver el sábado", etc.) — mismo criterio que enviados:
+  // varias entradas con fecha, no un campo único que se pisa cada vez. Va
+  // ANTES de los handlers genéricos PUT/DELETE por el mismo motivo que
+  // mEnviados (startsWith + .pop() interceptaría el sub-path si no).
+  const mComentarios = url.pathname.match(/^\/api\/requerimientos\/([^/]+)\/comentarios$/);
+  if (mComentarios && req.method === 'POST') {
+    const [, id] = mComentarios;
+    const body = await leerBody(req);
+    const texto = (body.texto || '').trim();
+    if (!texto) return json(res, 400, { error: 'Falta el texto del comentario.' });
+    const lista = leerRequerimientos(agenteId);
+    const idx = lista.findIndex((r) => r.id === id);
+    if (idx === -1) return json(res, 404, { error: 'No existe ese requerimiento' });
+    const comentarios = lista[idx].comentarios || [];
+    comentarios.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), texto, fecha: new Date().toISOString() });
+    lista[idx] = { ...lista[idx], comentarios };
+    guardarRequerimientos(lista, agenteId);
+    return json(res, 200, lista[idx]);
+  }
+  if (mComentarios && req.method === 'DELETE') {
+    const [, id] = mComentarios;
+    const body = await leerBody(req);
+    const lista = leerRequerimientos(agenteId);
+    const idx = lista.findIndex((r) => r.id === id);
+    if (idx === -1) return json(res, 404, { error: 'No existe ese requerimiento' });
+    lista[idx] = { ...lista[idx], comentarios: (lista[idx].comentarios || []).filter((c) => c.id !== body.id) };
+    guardarRequerimientos(lista, agenteId);
+    return json(res, 200, lista[idx]);
+  }
+
   if (url.pathname.startsWith('/api/requerimientos/') && req.method === 'PUT') {
     const id = url.pathname.split('/').pop();
     const body = await leerBody(req);
@@ -2273,6 +2355,26 @@ async function manejarRequest(req, res) {
     const id = url.pathname.split('/')[3];
     const ok = marcarAlertaLeida(agenteId, id);
     return json(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'No existe esa alerta' });
+  }
+
+  // Feedback de agentes — sugerencias/quejas/comentarios sobre la app en sí,
+  // no sobre un lead puntual (eso son los comentarios de requerimientos).
+  if (url.pathname === '/api/feedback' && req.method === 'POST') {
+    const body = await leerBody(req);
+    const texto = (body.texto || '').trim();
+    if (!texto) return json(res, 400, { error: 'Falta el texto del feedback.' });
+    const agenteActual = leerAgentes().find((a) => a.id === agenteId);
+    const lista = leerFeedback();
+    lista.unshift({
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      agenteId,
+      agenteNombre: agenteActual ? agenteActual.nombre : 'Agente',
+      texto,
+      fecha: new Date().toISOString(),
+      leido: false,
+    });
+    guardarFeedbackLista(lista);
+    return json(res, 200, { ok: true });
   }
 
   // Estado de la IA (para que la interfaz sepa si mostrar los botones)
