@@ -315,7 +315,7 @@
 
   .resumen-ia { background: var(--ok-soft); border: 1px solid #1e5138; color: #c9f5db; border-radius: var(--radius); padding: 15px; margin-bottom: 16px; font-size: 14px; line-height: 1.55; box-shadow: var(--shadow-sm); }
   .resumen-ia strong { color: #86efac; }
-  .transcript { font-size: 13px; color: var(--text); background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 9px 11px; }
+  .transcript { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--text); background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 9px 11px; }
   .aviso { color: #fde6a8; background: var(--warn-soft); border: 1px solid #6b5010; border-radius: var(--radius-xs); padding: 9px 11px; font-size: 13px; }
   .badge { display: inline-block; background: var(--ok-soft); color: #86efac; font-size: 11px; padding: 2px 9px; border-radius: 999px; }
 
@@ -423,7 +423,10 @@
       <button type="button" id="btnInterpretar">Interpretar pedido</button>
       <p id="estadoDictado" class="sub" style="display:none; margin:0"></p>
       <p id="avisoInterpretacion" class="aviso" style="display:none"></p>
-      <p id="textoDictado" class="transcript" style="display:none"></p>
+      <div id="wrapTextoDictado" class="transcript" style="display:none">
+        <span id="textoDictado"></span>
+        <button type="button" id="btnBorrarDictado" class="quitar-manual" title="Borrar dictado">×</button>
+      </div>
     </div>
 
     <div class="modo-edicion" id="modoEdicion">
@@ -1650,6 +1653,18 @@ function aplicarAlFormulario(campos) {
 const btnDictar = $('#btnDictar');
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
+// Botón "Borrar dictado" — limpia el cuadro de transcripción y los avisos
+// relacionados. Independiente de la grabación en sí (se puede borrar en
+// cualquier momento, incluso mucho después de haber dictado).
+$('#btnBorrarDictado').addEventListener('click', () => {
+  $('#wrapTextoDictado').style.display = 'none';
+  $('#textoDictado').textContent = '';
+  $('#estadoDictado').style.display = 'none';
+  $('#estadoDictado').textContent = '';
+  $('#avisoInterpretacion').style.display = 'none';
+  $('#avisoInterpretacion').textContent = '';
+});
+
 if (!SR) {
   btnDictar.disabled = true;
   $('#btnDictarTxt').textContent = 'Dictado no disponible en este navegador (usá Chrome)';
@@ -1657,12 +1672,12 @@ if (!SR) {
   let rec = null;
   let dictando = false;
   let transcript = '';
+  const TXT_QUIETO = 'Mantené apretado para dictar';
 
-  btnDictar.addEventListener('click', () => {
-    if (dictando) {
-      rec.stop();
-      return;
-    }
+  $('#btnDictarTxt').textContent = TXT_QUIETO;
+
+  function iniciarDictado() {
+    if (dictando) return; // por si el navegador dispara mousedown y touchstart para el mismo toque
     transcript = '';
     rec = new SR();
     rec.lang = 'es-BO';
@@ -1678,10 +1693,11 @@ if (!SR) {
       }
       // reconstruir desde cero para evitar duplicados
       transcript = [...e.results].filter((r) => r.isFinal).map((r) => r[0].transcript).join(' ');
-      $('#textoDictado').style.display = 'block';
+      $('#wrapTextoDictado').style.display = 'flex';
       $('#textoDictado').textContent = (transcript + ' ' + interim).trim();
     };
     rec.onerror = (e) => {
+      if (e.error === 'no-speech' || e.error === 'aborted') return; // soltó rápido sin hablar — no es un error real
       $('#estadoDictado').style.display = 'block';
       $('#estadoDictado').textContent =
         e.error === 'not-allowed'
@@ -1691,17 +1707,33 @@ if (!SR) {
     rec.onend = () => {
       dictando = false;
       btnDictar.classList.remove('grabando');
-      $('#btnDictarTxt').textContent = 'Dictar requerimiento';
+      $('#btnDictarTxt').textContent = TXT_QUIETO;
       if (transcript.trim()) interpretarPedido(transcript);
     };
 
     rec.start();
     dictando = true;
     btnDictar.classList.add('grabando');
-    $('#btnDictarTxt').textContent = 'Detener dictado';
+    $('#btnDictarTxt').textContent = 'Escuchando… soltá para terminar';
     $('#estadoDictado').style.display = 'block';
     $('#estadoDictado').textContent = 'Escuchando… hablá con detalle (tipo, zona, dormitorios, presupuesto).';
-  });
+  }
+
+  function detenerDictado() {
+    if (!dictando) return;
+    rec.stop();
+  }
+
+  // Apretar y mantener para dictar, soltar para terminar — en vez de
+  // click-click. mouseleave cubre el caso de soltar arrastrando el dedo/
+  // cursor fuera del botón sin levantarlo primero. Los touch* van con
+  // preventDefault para que el navegador no dispare además los eventos de
+  // mouse equivalentes (evita un doble start/stop en celular).
+  btnDictar.addEventListener('mousedown', iniciarDictado);
+  btnDictar.addEventListener('mouseup', detenerDictado);
+  btnDictar.addEventListener('mouseleave', detenerDictado);
+  btnDictar.addEventListener('touchstart', (e) => { e.preventDefault(); iniciarDictado(); });
+  btnDictar.addEventListener('touchend', (e) => { e.preventDefault(); detenerDictado(); });
 }
 </script>
 </body>
