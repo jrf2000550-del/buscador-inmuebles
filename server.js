@@ -309,24 +309,82 @@ async function listarSubcarpetasDrive(raizId) {
   }
 }
 
+// Adivina tipo/operación a partir de nombres de carpeta (propiedad primero,
+// categoría como respaldo) — José Luis organiza su Drive con carpetas de
+// categoría ("TERRENOS", "ALQUILER") que contienen las carpetas de cada
+// propiedad, así que el nombre de la propiedad manda si tiene una pista
+// propia, y si no, se usa la de la carpeta que la contiene.
+const PISTAS_TIPO = [
+  [/quinta/i, 'quinta'], [/terreno/i, 'terreno'], [/edificio/i, 'edificio'],
+  [/oficina/i, 'oficina'], [/departamento/i, 'departamento'], [/dep[oó]sito|galp[oó]n/i, 'deposito'],
+  [/local/i, 'local'], [/rancho/i, 'rancho'], [/hotel/i, 'hotel'], [/colegio/i, 'colegio'],
+  [/cochera/i, 'cochera'], [/casa/i, 'casa'],
+];
+function detectarTipo(nombre) {
+  for (const [regex, tipo] of PISTAS_TIPO) if (regex.test(nombre)) return tipo;
+  return null;
+}
+function adivinarTipo(...nombres) {
+  for (const n of nombres) {
+    const t = detectarTipo(n);
+    if (t) return t;
+  }
+  return 'casa';
+}
+function adivinarOperacion(...nombres) {
+  return nombres.some((n) => /alquiler/i.test(n)) ? 'alquiler' : 'venta';
+}
+
 // Sincronización de un toque: el agente conecta UNA sola carpeta raíz de su
-// Drive (ya organizada por él, una subcarpeta = una propiedad) y acá se crea
-// o actualiza un ítem de inventario por cada subcarpeta. El match es por
-// driveFolderId (no por título) para que, si el agente edita el título/
-// precio/zona a mano después, una resincronización no le pise esos datos —
-// solo refresca las fotos de los ítems ya creados.
+// Drive. Escanea 2 niveles: si una carpeta de nivel 1 tiene subcarpetas, cada
+// subcarpeta es una propiedad (carpeta de categoría, ej. "TERRENOS" con una
+// carpeta por terreno adentro); si no tiene subcarpetas pero sí fotos propias,
+// la carpeta de nivel 1 ES la propiedad (ej. "QUINTA EL ABUELO" suelta en la
+// raíz). El match con ítems ya creados es por driveFolderId (no por título),
+// así una resincronización nunca pisa lo que el agente ya completó a mano —
+// solo refresca fotos. Además, si una sincronización anterior (antes de este
+// arreglo) había creado un ítem para una carpeta que en realidad es de
+// categoría, se lo saca acá para no dejar duplicados sueltos.
 async function sincronizarInventarioDesdeDrive(agenteId) {
   const agente = leerAgentes().find((a) => a.id === agenteId);
   const raizId = agente && idCarpetaDrive(agente.driveRaizUrl);
   if (!raizId) return { error: 'No hay una carpeta raíz de Drive configurada.' };
-  const subcarpetas = await listarSubcarpetasDrive(raizId);
-  const lista = leerInventario(agenteId);
+
+  const nivel1 = await listarSubcarpetasDrive(raizId);
+  const propiedades = [];
+  for (const cat of nivel1) {
+    const subcarpetas = await listarSubcarpetasDrive(cat.id);
+    if (subcarpetas.length) {
+      for (const prop of subcarpetas) {
+        propiedades.push({
+          folderId: prop.id,
+          nombre: prop.name,
+          tipo: adivinarTipo(prop.name, cat.name),
+          operacion: adivinarOperacion(prop.name, cat.name),
+        });
+      }
+    } else {
+      const fotosDirectas = await resolverFotosDrive(`https://drive.google.com/drive/folders/${cat.id}`);
+      if (fotosDirectas.length) {
+        propiedades.push({
+          folderId: cat.id,
+          nombre: cat.name,
+          tipo: adivinarTipo(cat.name),
+          operacion: adivinarOperacion(cat.name),
+          fotos: fotosDirectas,
+        });
+      }
+    }
+  }
+
+  const idsValidos = new Set(propiedades.map((p) => p.folderId));
+  let lista = leerInventario(agenteId).filter((i) => !i.driveFolderId || idsValidos.has(i.driveFolderId));
+
   let creados = 0;
   let actualizados = 0;
-  for (const carpeta of subcarpetas) {
-    const carpetaUrl = `https://drive.google.com/drive/folders/${carpeta.id}`;
-    const fotos = await resolverFotosDrive(carpetaUrl);
-    const idx = lista.findIndex((i) => i.driveFolderId === carpeta.id);
+  for (const prop of propiedades) {
+    const fotos = prop.fotos || (await resolverFotosDrive(`https://drive.google.com/drive/folders/${prop.folderId}`));
+    const idx = lista.findIndex((i) => i.driveFolderId === prop.folderId);
     if (idx === -1) {
       lista.unshift({
         id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -334,10 +392,10 @@ async function sincronizarInventarioDesdeDrive(agenteId) {
         ultimaConfirmacion: new Date().toISOString(),
         comentarios: [],
         categoria: 'mio',
-        titulo: carpeta.name,
+        titulo: prop.nombre,
         descripcion: '',
-        operacion: 'venta',
-        tipo: 'casa',
+        operacion: prop.operacion,
+        tipo: prop.tipo,
         precio: null,
         zona: '',
         direccion: '',
@@ -348,8 +406,8 @@ async function sincronizarInventarioDesdeDrive(agenteId) {
         captadorNombre: '',
         captadorTelefono: '',
         estado: 'disponible',
-        driveFolderId: carpeta.id,
-        fotosCarpetaDrive: carpetaUrl,
+        driveFolderId: prop.folderId,
+        fotosCarpetaDrive: `https://drive.google.com/drive/folders/${prop.folderId}`,
         fotos,
       });
       creados++;
@@ -359,7 +417,7 @@ async function sincronizarInventarioDesdeDrive(agenteId) {
     }
   }
   guardarInventario(lista, agenteId);
-  return { ok: true, carpetas: subcarpetas.length, creados, actualizados };
+  return { ok: true, carpetas: propiedades.length, creados, actualizados };
 }
 
 // Corre matcheaPropiedad contra los requerimientos guardados DEL MISMO
