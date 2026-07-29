@@ -294,24 +294,27 @@ async function listarArchivosDrive(folderId) {
 }
 
 // Muchos agentes no ponen las fotos sueltas en la carpeta de la propiedad,
-// sino organizadas en sub-subcarpetas propias (ej. "Exterior"/"Interior") —
-// si no hay nada directo, se junta lo que haya un nivel más adentro. De paso
-// detecta el primer PDF de la carpeta (ficha/brochure) para la extracción
-// automática de precio/características.
+// sino organizadas en sub-subcarpetas propias (ej. "Exterior"/"Interior"),
+// y a veces el PDF (ficha/brochure) está en otra subcarpeta distinta a la
+// de las fotos — así que fotos y PDF se buscan CADA UNO por separado un
+// nivel más adentro si no aparecen directo, no se detienen la búsqueda de
+// uno solo porque ya se encontró el otro.
 async function recolectarArchivosCarpeta(folderId, profundidad = 1) {
   const archivos = await listarArchivosDrive(folderId);
-  const imagenes = archivos.filter((f) => f.mimeType && f.mimeType.startsWith('image/'));
-  const pdf = archivos.find((f) => f.mimeType === 'application/pdf');
-  if (imagenes.length || pdf || profundidad <= 0) {
-    return { fotos: imagenes.map((f) => `https://drive.google.com/thumbnail?id=${f.id}&sz=w1200`), pdfId: pdf ? pdf.id : null };
-  }
-  const subs = await listarSubcarpetasDrive(folderId);
-  let fotos = [];
-  let pdfId = null;
-  for (const sub of subs) {
-    const r = await recolectarArchivosCarpeta(sub.id, profundidad - 1);
-    fotos = fotos.concat(r.fotos);
-    if (!pdfId) pdfId = r.pdfId;
+  const imagenesDirectas = archivos.filter((f) => f.mimeType && f.mimeType.startsWith('image/'));
+  const pdfDirecto = archivos.find((f) => f.mimeType === 'application/pdf');
+  const subs = archivos.filter((f) => f.mimeType === 'application/vnd.google-apps.folder');
+
+  let fotos = imagenesDirectas.map((f) => `https://drive.google.com/thumbnail?id=${f.id}&sz=w1200`);
+  let pdfId = pdfDirecto ? pdfDirecto.id : null;
+
+  if ((!fotos.length || !pdfId) && profundidad > 0) {
+    for (const sub of subs) {
+      if (fotos.length && pdfId) break;
+      const r = await recolectarArchivosCarpeta(sub.id, profundidad - 1);
+      if (!fotos.length) fotos = r.fotos;
+      if (!pdfId) pdfId = r.pdfId;
+    }
   }
   return { fotos, pdfId };
 }
