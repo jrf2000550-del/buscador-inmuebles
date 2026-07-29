@@ -278,16 +278,16 @@ function idCarpetaDrive(url) {
   return m ? m[0] : null;
 }
 
-async function listarImagenesDirectas(folderId) {
+async function listarArchivosDrive(folderId) {
   if (!process.env.GOOGLE_API_KEY) return [];
   try {
-    const q = encodeURIComponent(`'${folderId}' in parents and mimeType contains 'image/' and trashed = false`);
+    const q = encodeURIComponent(`'${folderId}' in parents and trashed = false`);
     const resp = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&pageSize=100&key=${process.env.GOOGLE_API_KEY}`
+      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType)&pageSize=100&key=${process.env.GOOGLE_API_KEY}`
     );
     if (!resp.ok) return [];
     const data = await resp.json();
-    return (data.files || []).map((f) => `https://drive.google.com/thumbnail?id=${f.id}&sz=w1200`);
+    return data.files || [];
   } catch {
     return [];
   }
@@ -295,22 +295,81 @@ async function listarImagenesDirectas(folderId) {
 
 // Muchos agentes no ponen las fotos sueltas en la carpeta de la propiedad,
 // sino organizadas en sub-subcarpetas propias (ej. "Exterior"/"Interior") —
-// si no hay fotos directas, se junta lo que haya un nivel más adentro.
-async function resolverFotosCarpeta(folderId, profundidad = 1) {
-  const directas = await listarImagenesDirectas(folderId);
-  if (directas.length || profundidad <= 0) return directas;
-  const subs = await listarSubcarpetasDrive(folderId);
-  let todas = [];
-  for (const sub of subs) {
-    todas = todas.concat(await resolverFotosCarpeta(sub.id, profundidad - 1));
+// si no hay nada directo, se junta lo que haya un nivel más adentro. De paso
+// detecta el primer PDF de la carpeta (ficha/brochure) para la extracción
+// automática de precio/características.
+async function recolectarArchivosCarpeta(folderId, profundidad = 1) {
+  const archivos = await listarArchivosDrive(folderId);
+  const imagenes = archivos.filter((f) => f.mimeType && f.mimeType.startsWith('image/'));
+  const pdf = archivos.find((f) => f.mimeType === 'application/pdf');
+  if (imagenes.length || pdf || profundidad <= 0) {
+    return { fotos: imagenes.map((f) => `https://drive.google.com/thumbnail?id=${f.id}&sz=w1200`), pdfId: pdf ? pdf.id : null };
   }
-  return todas;
+  const subs = await listarSubcarpetasDrive(folderId);
+  let fotos = [];
+  let pdfId = null;
+  for (const sub of subs) {
+    const r = await recolectarArchivosCarpeta(sub.id, profundidad - 1);
+    fotos = fotos.concat(r.fotos);
+    if (!pdfId) pdfId = r.pdfId;
+  }
+  return { fotos, pdfId };
+}
+
+async function resolverFotosCarpeta(folderId, profundidad = 1) {
+  return (await recolectarArchivosCarpeta(folderId, profundidad)).fotos;
 }
 
 async function resolverFotosDrive(carpetaUrl) {
   const id = idCarpetaDrive(carpetaUrl);
   if (!id || !process.env.GOOGLE_API_KEY) return [];
   return resolverFotosCarpeta(id, 1);
+}
+
+// Descarga el contenido crudo de un archivo público de Drive (sirve para
+// PDFs, igual que las fotos: la carpeta ya está compartida "cualquiera con
+// el link puede ver", así que una API key alcanza, sin OAuth).
+async function descargarArchivoDrive(fileId) {
+  if (!process.env.GOOGLE_API_KEY) return null;
+  try {
+    const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${process.env.GOOGLE_API_KEY}`);
+    if (!resp.ok) return null;
+    return Buffer.from(await resp.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+// Lee el PDF (ficha/brochure) de la propiedad con Gemini (soporta PDFs
+// nativamente, sin librería de parseo) y extrae precio/características —
+// así el agente no tiene que tipear nada si ya tiene una ficha en la
+// carpeta. Solo con Gemini (gratis); si solo hay Claude configurado, se
+// omite esta extracción (no rompe nada, el campo queda pendiente).
+const PROMPT_EXTRAER_FICHA =
+  'Sos un asistente que extrae datos de una ficha/brochure de una propiedad inmobiliaria en Bolivia. ' +
+  'Del documento adjunto extraé SOLO lo que esté explícito ahí — nunca inventes ni asumas un valor. ' +
+  'Devolvé JSON con EXACTAMENTE estas claves (null si no aparece en el documento): precio (número en ' +
+  'USD, sin símbolos ni puntos de miles), m2Terreno (número), m2Construccion (número), dormitorios ' +
+  '(número), banos (número), zona (string corto, el barrio o zona), descripcion (string corto, 1-2 frases).';
+
+async function extraerFichaConIA(fileId) {
+  if (!process.env.GEMINI_API_KEY || !fileId) return null;
+  const buffer = await descargarArchivoDrive(fileId);
+  if (!buffer) return null;
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+    const body = {
+      contents: [{ role: 'user', parts: [{ text: PROMPT_EXTRAER_FICHA }, { inlineData: { mimeType: 'application/pdf', data: buffer.toString('base64') } }] }],
+      generationConfig: { responseMimeType: 'application/json', temperature: 0.1 },
+    };
+    const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return null;
+  }
 }
 
 async function listarSubcarpetasDrive(raizId) {
@@ -387,14 +446,15 @@ async function sincronizarInventarioDesdeDrive(agenteId) {
         });
       }
     } else {
-      const fotosDirectas = await listarImagenesDirectas(cat.id);
-      if (fotosDirectas.length) {
+      const directo = await recolectarArchivosCarpeta(cat.id, 0);
+      if (directo.fotos.length || directo.pdfId) {
         propiedades.push({
           folderId: cat.id,
           nombre: cat.name,
           tipo: adivinarTipo(cat.name),
           operacion: adivinarOperacion(cat.name),
-          fotos: fotosDirectas,
+          fotos: directo.fotos,
+          pdfId: directo.pdfId,
         });
       }
     }
@@ -406,9 +466,14 @@ async function sincronizarInventarioDesdeDrive(agenteId) {
   let creados = 0;
   let actualizados = 0;
   for (const prop of propiedades) {
-    const fotos = prop.fotos || (await resolverFotosCarpeta(prop.folderId, 1));
+    const recolectado = prop.fotos !== undefined ? prop : await recolectarArchivosCarpeta(prop.folderId, 1);
+    const fotos = recolectado.fotos;
+    const pdfId = recolectado.pdfId;
     const idx = lista.findIndex((i) => i.driveFolderId === prop.folderId);
     if (idx === -1) {
+      // Si hay una ficha/brochure en PDF, la IA la lee y completa precio y
+      // características — el agente no tiene que tipear nada si ya la subió.
+      const extraido = pdfId ? await extraerFichaConIA(pdfId) : null;
       lista.unshift({
         id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         creado: new Date().toISOString(),
@@ -416,27 +481,47 @@ async function sincronizarInventarioDesdeDrive(agenteId) {
         comentarios: [],
         categoria: 'mio',
         titulo: prop.nombre,
-        descripcion: '',
+        descripcion: extraido?.descripcion || '',
         operacion: prop.operacion,
         tipo: prop.tipo,
-        precio: null,
-        zona: '',
+        precio: extraido?.precio ?? null,
+        zona: extraido?.zona || '',
         direccion: '',
-        dormitorios: null,
-        banos: null,
-        m2Terreno: null,
-        m2Construccion: null,
+        dormitorios: extraido?.dormitorios ?? null,
+        banos: extraido?.banos ?? null,
+        m2Terreno: extraido?.m2Terreno ?? null,
+        m2Construccion: extraido?.m2Construccion ?? null,
         captadorNombre: '',
         captadorTelefono: '',
         estado: 'disponible',
         driveFolderId: prop.folderId,
         fotosCarpetaDrive: `https://drive.google.com/drive/folders/${prop.folderId}`,
         fotos,
-        historialPrecios: [],
+        fichaPdfId: pdfId,
+        historialPrecios: extraido?.precio != null ? [{ precio: extraido.precio, fecha: new Date().toISOString() }] : [],
       });
       creados++;
     } else {
-      lista[idx] = { ...lista[idx], fotos };
+      // Resincronización: solo completa lo que todavía está vacío — nunca
+      // pisa datos que el agente ya cargó o corrigió a mano.
+      const actual = lista[idx];
+      const cambios = { fotos, fichaPdfId: pdfId };
+      if (pdfId && actual.precio == null) {
+        const extraido = await extraerFichaConIA(pdfId);
+        if (extraido) {
+          if (extraido.precio != null) {
+            cambios.precio = extraido.precio;
+            cambios.historialPrecios = [...(actual.historialPrecios || []), { precio: extraido.precio, fecha: new Date().toISOString() }];
+          }
+          if (extraido.zona && !actual.zona) cambios.zona = extraido.zona;
+          if (extraido.descripcion && !actual.descripcion) cambios.descripcion = extraido.descripcion;
+          if (extraido.dormitorios != null && actual.dormitorios == null) cambios.dormitorios = extraido.dormitorios;
+          if (extraido.banos != null && actual.banos == null) cambios.banos = extraido.banos;
+          if (extraido.m2Terreno != null && actual.m2Terreno == null) cambios.m2Terreno = extraido.m2Terreno;
+          if (extraido.m2Construccion != null && actual.m2Construccion == null) cambios.m2Construccion = extraido.m2Construccion;
+        }
+      }
+      lista[idx] = { ...actual, ...cambios };
       actualizados++;
     }
   }
@@ -2522,6 +2607,7 @@ async function manejarRequest(req, res) {
         m2Terreno: i.m2Terreno,
         m2Construccion: i.m2Construccion,
         fotos: i.fotos || [],
+        carpetaDriveUrl: i.fotosCarpetaDrive || null,
       }));
     return json(res, 200, {
       agente: { nombre: agenteVitrina.nombre, telefonoContacto: agenteVitrina.telefonoContacto || '' },
