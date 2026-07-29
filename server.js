@@ -723,6 +723,20 @@ function parsePrecio(v) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+// Busca en un texto libre (título+descripción de un aviso) una mención de
+// precio con símbolo de moneda (US$/USD/Bs) que difiera bastante del precio
+// estructurado que ya trae el portal — señal de que el agente que publicó
+// el aviso escribió mal uno de los dos campos. Requiere símbolo de moneda
+// explícito para no confundir m², año de construcción, teléfonos, etc. con
+// un precio.
+function detectarPrecioInconsistente(texto, precioEstructurado) {
+  if (!precioEstructurado || !texto) return null;
+  const candidatos = [...texto.matchAll(/(?:US\$|USD|Bs\.?)\s*([\d][\d.,]{3,})/gi)]
+    .map((m) => Number(m[1].replace(/\./g, '').replace(',', '.')))
+    .filter((n) => Number.isFinite(n) && n > 500 && n < 50000000);
+  return candidatos.find((n) => Math.abs(n - precioEstructurado) / precioEstructurado > 0.03) || null;
+}
+
 // Convierte el presupuesto a US$ (los portales cotizan en US$).
 // moneda 'bob' → divide por el tipo de cambio (editable); 'usd' → tal cual.
 function convertirPresupuesto(req) {
@@ -1690,6 +1704,18 @@ async function buscarTodo(req) {
   ]);
 
   let items = [...c21, ...remax, ...bien, ...mobiliario];
+
+  // Aviso de precio inconsistente: cuando el título/descripción del propio
+  // aviso menciona un precio bien distinto al campo estructurado del portal
+  // (el agente que publicó escribió mal uno de los dos). Nunca se "corrige"
+  // solo — se marca para que el agente que usa la app decida cuál es el real.
+  for (const i of items) {
+    const otroPrecio = detectarPrecioInconsistente(`${i.titulo} ${i.descripcion}`, i.precio);
+    if (otroPrecio) {
+      i.avisoPrecio = `El texto del aviso menciona US$ ${otroPrecio.toLocaleString('es-BO')}, distinto al precio informado (US$ ${i.precio.toLocaleString('es-BO')}) — verificar con el portal.`;
+    }
+  }
+
   const porFuenteBruto = {
     'Century 21': c21.length,
     'RE/MAX': remax.length,

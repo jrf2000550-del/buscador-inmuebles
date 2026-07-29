@@ -292,6 +292,7 @@
   .card .fuente.bien { background: #0d2b3a; color: #5ac8ff; }
   .card .fuente.mobiliario { background: #1f0d3a; color: #b794ff; }
   .card .cerca { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .03em; color: var(--warn); }
+  .card .aviso-precio { font-size: 11px; color: var(--warn); background: var(--warn-soft); padding: 4px 8px; border-radius: var(--radius-xs); margin: 4px 0; }
 
   .acciones-card { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 3px; }
   .acciones-card .wa {
@@ -1356,6 +1357,7 @@ async function buscar(r) {
         <div class="fuente ${i.fuente === 'RE/MAX' ? 'remax' : i.fuente === 'BienInmuebles' ? 'bien' : i.fuente === 'Mobiliario App' ? 'mobiliario' : 'c21'}">${i.fuente}${i.oficina ? ' · ' + i.oficina : ''}</div>
         ${i.cercaPresupuesto ? '<div class="cerca">Cerca del presupuesto</div>' : ''}
         <div class="precio">${i.destaca ? '★ ' : ''}${i.precio ? 'U$S ' + i.precio.toLocaleString('es-BO') : 'Consultar precio'}</div>
+        ${i.avisoPrecio ? `<div class="aviso-precio">⚠ ${i.avisoPrecio}</div>` : ''}
         <div class="titulo">${i.titulo}</div>
         <div class="zona">${[i.zona, i.direccion].filter(Boolean).join(' — ')}</div>
         <div class="specs">${[
