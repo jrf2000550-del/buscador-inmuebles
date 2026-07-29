@@ -1798,7 +1798,7 @@ if (!SR) {
   let rec = null;
   let dictando = false;
   let transcript = '';
-  const TXT_QUIETO = 'Mantené apretado para dictar';
+  const TXT_QUIETO = 'Apretá para dictar';
 
   $('#btnDictarTxt').textContent = TXT_QUIETO;
 
@@ -1840,7 +1840,7 @@ if (!SR) {
     rec.start();
     dictando = true;
     btnDictar.classList.add('grabando');
-    $('#btnDictarTxt').textContent = 'Escuchando… soltá para terminar';
+    $('#btnDictarTxt').textContent = 'Escuchando… tocá de nuevo para terminar';
     $('#estadoDictado').style.display = 'block';
     $('#estadoDictado').textContent = 'Escuchando… hablá con detalle (tipo, zona, dormitorios, presupuesto).';
   }
@@ -1850,16 +1850,13 @@ if (!SR) {
     rec.stop();
   }
 
-  // Apretar y mantener para dictar, soltar para terminar — en vez de
-  // click-click. mouseleave cubre el caso de soltar arrastrando el dedo/
-  // cursor fuera del botón sin levantarlo primero. Los touch* van con
-  // preventDefault para que el navegador no dispare además los eventos de
-  // mouse equivalentes (evita un doble start/stop en celular).
-  btnDictar.addEventListener('mousedown', iniciarDictado);
-  btnDictar.addEventListener('mouseup', detenerDictado);
-  btnDictar.addEventListener('mouseleave', detenerDictado);
-  btnDictar.addEventListener('touchstart', (e) => { e.preventDefault(); iniciarDictado(); });
-  btnDictar.addEventListener('touchend', (e) => { e.preventDefault(); detenerDictado(); });
+  // Click para empezar, click de nuevo para terminar (no apretar y
+  // mantener) — así el agente no tiene que sostener el dedo/mouse mientras
+  // habla.
+  btnDictar.addEventListener('click', () => {
+    if (dictando) detenerDictado();
+    else iniciarDictado();
+  });
 }
 </script>
 </body>

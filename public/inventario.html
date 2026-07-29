@@ -63,8 +63,9 @@
 
   .grid-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
   .grid-form .full { grid-column: 1 / -1; }
-  #formInv { display: grid; gap: 12px; }
+  #formInv { display: grid; gap: 12px; margin-top: 16px; }
   #formInv .acciones-form { display: flex; gap: 8px; align-items: center; }
+  .fila-toggle-form { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 
   .tabs-inv { display: flex; gap: 8px; margin-bottom: 16px; }
   .tabs-inv button { background: var(--panel-2); color: var(--muted); box-shadow: none; border: 1.5px solid var(--border); }
@@ -153,8 +154,11 @@
     </div>
 
     <div class="panel">
-      <h2 id="tituloForm">Agregar</h2>
-      <form id="formInv">
+      <div class="fila-toggle-form">
+        <h2 id="tituloForm" style="margin:0">➕ Agregar propiedad manualmente</h2>
+        <button type="button" class="chico fantasma" id="btnToggleForm">Mostrar formulario</button>
+      </div>
+      <form id="formInv" style="display:none">
         <div class="grid-form">
           <label>Categoría
             <select name="categoria" id="campoCategoria">
@@ -451,6 +455,19 @@ async function borrarInv(id) {
   cargarInventario();
 }
 
+function mostrarFormularioInv() {
+  $('#formInv').style.display = 'grid';
+  $('#btnToggleForm').textContent = 'Ocultar formulario';
+}
+function ocultarFormularioInv() {
+  $('#formInv').style.display = 'none';
+  $('#btnToggleForm').textContent = 'Mostrar formulario';
+}
+$('#btnToggleForm').addEventListener('click', () => {
+  if ($('#formInv').style.display === 'none') mostrarFormularioInv();
+  else ocultarFormularioInv();
+});
+
 function editarInv(item) {
   editandoId = item.id;
   const f = $('#formInv');
@@ -461,16 +478,18 @@ function editarInv(item) {
   $('#tituloForm').textContent = 'Editando: ' + item.titulo;
   $('#btnGuardarInv').textContent = 'Guardar cambios';
   $('#btnCancelarInv').style.display = 'inline-block';
+  mostrarFormularioInv();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function cancelarEdicionInv() {
   editandoId = null;
   $('#formInv').reset();
-  $('#tituloForm').textContent = 'Agregar';
+  $('#tituloForm').textContent = '➕ Agregar propiedad manualmente';
   $('#btnGuardarInv').textContent = 'Guardar';
   $('#btnCancelarInv').style.display = 'none';
   $('#campoCategoria').dispatchEvent(new Event('change'));
+  ocultarFormularioInv();
 }
 $('#btnCancelarInv').addEventListener('click', cancelarEdicionInv);
 

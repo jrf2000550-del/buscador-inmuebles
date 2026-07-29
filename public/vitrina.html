@@ -15,7 +15,7 @@
     --shadow: 0 12px 32px -12px rgba(0,0,0,.55); --shadow-lg: 0 24px 60px -20px rgba(0,0,0,.6);
     --font: -apple-system, 'Segoe UI', system-ui, Roboto, sans-serif;
   }
-  * { box-sizing: border-box; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; padding: 0; }
   body {
     font-family: var(--font); color: var(--text); -webkit-font-smoothing: antialiased;
@@ -23,51 +23,98 @@
       radial-gradient(900px 420px at -8% 8%, rgba(45,212,191,.07), transparent), var(--bg);
     min-height: 100vh;
   }
-  header {
-    padding: 28px 28px 24px; text-align: center; border-bottom: 1px solid var(--border-soft);
-  }
-  header h1 { font-size: 22px; font-weight: 800; letter-spacing: -.02em; margin: 0 0 4px; }
-  header p { color: var(--muted); font-size: 13px; margin: 0; }
-  main { max-width: 1100px; margin: 0 auto; padding: 28px; }
+  header { padding: 22px 20px 18px; text-align: center; border-bottom: 1px solid var(--border-soft); }
+  header h1 { font-size: 19px; font-weight: 800; letter-spacing: -.02em; margin: 0 0 4px; }
+  header p { color: var(--muted); font-size: 12.5px; margin: 0; }
+  main { max-width: 1100px; margin: 0 auto; padding: 18px 16px 90px; }
 
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+  .barra-filtros {
+    position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 10px 0 12px;
+    display: flex; gap: 10px; align-items: center; flex-wrap: nowrap;
+  }
+  .chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; flex: 1; }
+  .chips::-webkit-scrollbar { display: none; }
+  .chip {
+    flex: none; background: var(--panel-2); border: 1.5px solid var(--border); color: var(--muted);
+    font-size: 12.5px; font-weight: 700; padding: 7px 13px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+  }
+  .chip.activo { background: linear-gradient(135deg, var(--accent-light), var(--accent) 60%, var(--accent-2)); color: var(--accent-ink); border-color: transparent; }
+  select#ordenPrecio {
+    flex: none; background: var(--panel-2); border: 1.5px solid var(--border); color: var(--text);
+    font-size: 12.5px; font-weight: 600; padding: 7px 10px; border-radius: var(--radius-xs); font-family: inherit;
+  }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
 
   .card {
     background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--border-soft);
     border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); display: flex; flex-direction: column;
   }
-  .card .foto-principal {
-    width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: var(--panel-3); display: block; cursor: pointer;
-  }
+  .card .foto-principal { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: var(--panel-3); display: block; cursor: pointer; }
   .card .sin-foto {
     width: 100%; aspect-ratio: 4 / 3; background: var(--panel-3); display: flex; align-items: center; justify-content: center;
     color: var(--muted-2); font-size: 13px;
   }
   .card .miniaturas { display: flex; gap: 4px; padding: 6px 10px 0; overflow-x: auto; }
-  .card .miniaturas img {
-    width: 44px; height: 44px; object-fit: cover; border-radius: 6px; cursor: pointer; border: 1.5px solid transparent; flex: none;
-  }
+  .card .miniaturas img { width: 40px; height: 40px; object-fit: cover; border-radius: 6px; cursor: pointer; border: 1.5px solid transparent; flex: none; }
   .card .miniaturas img.activa { border-color: var(--accent); }
-  .card .cuerpo { padding: 16px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+  .card .cuerpo { padding: 14px; display: flex; flex-direction: column; gap: 7px; flex: 1; }
   .card .fila-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-  .card .titulo { font-weight: 800; font-size: 15px; line-height: 1.3; }
-  .card .precio { color: var(--accent-light); font-weight: 800; font-size: 15px; white-space: nowrap; }
+  .card .titulo { font-weight: 800; font-size: 14.5px; line-height: 1.3; }
+  .card .precio { color: var(--accent-light); font-weight: 800; font-size: 14.5px; white-space: nowrap; }
   .card .badge-op { font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--ok-soft); color: #86efac; text-transform: uppercase; letter-spacing: .02em; }
-  .card .specs { color: var(--muted); font-size: 12.5px; line-height: 1.6; }
-  .card .descripcion { color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+  .card .specs { color: var(--muted); font-size: 12px; line-height: 1.6; }
+  .card .descripcion { color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .card .fila-acciones { margin-top: auto; display: flex; gap: 7px; }
   .card .contactar {
-    margin-top: auto; display: block; text-align: center; background: linear-gradient(135deg, #25d366, #128c7e);
-    color: #fff; font-weight: 800; border-radius: var(--radius-xs); padding: 11px 16px; font-size: 13.5px;
-    text-decoration: none;
+    flex: 1; display: block; text-align: center; background: linear-gradient(135deg, #25d366, #128c7e);
+    color: #fff; font-weight: 800; border-radius: var(--radius-xs); padding: 10px 12px; font-size: 13px; text-decoration: none;
+  }
+  .card .btn-pdf {
+    flex: none; background: var(--panel-3); border: 1.5px solid var(--border); color: var(--muted);
+    font-weight: 700; border-radius: var(--radius-xs); padding: 10px 12px; font-size: 13px; cursor: pointer; font-family: inherit;
   }
 
-  .vacio { color: var(--muted); text-align: center; padding: 60px 20px; font-size: 14px; }
-  .cargando { color: var(--muted); text-align: center; padding: 60px 20px; font-size: 14px; }
+  .vacio, .cargando { color: var(--muted); text-align: center; padding: 60px 20px; font-size: 14px; }
 
-  .seccion { margin-bottom: 32px; }
-  .seccion h2 { font-size: 15px; font-weight: 800; margin: 0 0 14px; display: flex; align-items: center; gap: 9px; }
-  .seccion h2::before { content: ''; width: 3px; height: 12px; border-radius: 3px; background: linear-gradient(180deg, var(--accent), var(--accent-2)); }
-  .seccion h2 .cant { color: var(--muted); font-weight: 600; font-size: 12.5px; }
+  .btn-ia-flotante {
+    position: fixed; bottom: 18px; right: 18px; z-index: 20;
+    background: linear-gradient(135deg, var(--accent-light), var(--accent) 60%, var(--accent-2)); color: var(--accent-ink);
+    border: 0; border-radius: 999px; padding: 13px 18px; font-weight: 800; font-size: 13.5px; cursor: pointer;
+    box-shadow: var(--shadow-lg); font-family: inherit;
+  }
+  .panel-ia {
+    position: fixed; bottom: 18px; right: 18px; z-index: 21; width: 340px; max-width: calc(100vw - 24px);
+    max-height: 70vh; background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--border-soft);
+    border-radius: var(--radius); box-shadow: var(--shadow-lg); display: none; flex-direction: column; overflow: hidden;
+  }
+  .panel-ia.abierto { display: flex; }
+  .panel-ia .cabecera-ia {
+    padding: 12px 14px; border-bottom: 1px solid var(--border-soft); display: flex; align-items: center; justify-content: space-between;
+  }
+  .panel-ia .cabecera-ia span { font-weight: 800; font-size: 13px; }
+  .panel-ia .cerrar-ia { background: none; border: 0; color: var(--muted); font-size: 18px; cursor: pointer; line-height: 1; padding: 0; }
+  .panel-ia .log-ia { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+  .panel-ia .msg-usuario { align-self: flex-end; background: var(--accent-soft, #3a2416); color: var(--text); padding: 8px 11px; border-radius: 10px 10px 2px 10px; max-width: 85%; }
+  .panel-ia .msg-ia { align-self: flex-start; background: var(--panel-3); color: var(--text); padding: 8px 11px; border-radius: 10px 10px 10px 2px; max-width: 90%; white-space: pre-wrap; line-height: 1.5; }
+  .panel-ia .fila-ia { display: flex; gap: 6px; padding: 10px; border-top: 1px solid var(--border-soft); }
+  .panel-ia .fila-ia input { flex: 1; background: var(--panel-2); border: 1.5px solid var(--border); color: var(--text); border-radius: var(--radius-xs); padding: 9px 11px; font-size: 13px; font-family: inherit; }
+  .panel-ia .fila-ia button { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: var(--radius-xs); padding: 9px 13px; font-weight: 800; cursor: pointer; font-family: inherit; }
+
+  @media (max-width: 560px) {
+    .panel-ia { left: 12px; right: 12px; bottom: 0; width: auto; max-width: none; max-height: 75vh; border-radius: var(--radius) var(--radius) 0 0; }
+    .btn-ia-flotante { right: 14px; bottom: 14px; padding: 12px 16px; font-size: 13px; }
+  }
+
+  #printArea { display: none; }
+  @media print {
+    body > *:not(#printArea) { display: none !important; }
+    #printArea { display: block !important; padding: 10px; color: #000; background: #fff; }
+    #printArea * { color: #000 !important; }
+    #printArea .foto-print { width: 100%; max-height: 340px; object-fit: cover; border-radius: 8px; margin: 10px 0; }
+    #printArea .miniaturas-print { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+    #printArea .miniaturas-print img { width: 90px; height: 90px; object-fit: cover; border-radius: 6px; }
+  }
 </style>
 </head>
 <body>
@@ -77,8 +124,31 @@
   <p id="subHeader">Cargando...</p>
 </header>
 <main>
+  <div class="barra-filtros" id="barraFiltros" style="display:none">
+    <div class="chips" id="chips"></div>
+    <select id="ordenPrecio">
+      <option value="reciente">Más recientes</option>
+      <option value="precioAsc">Precio: menor a mayor</option>
+      <option value="precioDesc">Precio: mayor a menor</option>
+    </select>
+  </div>
   <div id="contenido" class="cargando">Cargando propiedades...</div>
 </main>
+
+<button type="button" class="btn-ia-flotante" id="btnAbrirIA">💬 Preguntale a la IA</button>
+<div class="panel-ia" id="panelIA">
+  <div class="cabecera-ia">
+    <span>💬 Preguntale a la IA</span>
+    <button type="button" class="cerrar-ia" id="btnCerrarIA">×</button>
+  </div>
+  <div class="log-ia" id="logIA"></div>
+  <div class="fila-ia">
+    <input type="text" id="inputIA" placeholder="Ej: ¿qué terrenos tenés?">
+    <button type="button" id="btnEnviarIA">Enviar</button>
+  </div>
+</div>
+
+<div id="printArea"></div>
 
 <script>
 const $ = (s) => document.querySelector(s);
@@ -91,6 +161,13 @@ const NOMBRE_TIPO = {
   agricolas: 'Agrícolas', ganaderas: 'Ganaderas', cochera: 'Cocheras', hotel: 'Hoteles', colegio: 'Colegios',
   proyecto: 'Proyectos (preventa)',
 };
+
+let propiedades = [];
+let porId = {};
+let nombreAgente = '';
+let telefonoContacto = '';
+let filtroTipo = '';
+let orden = 'reciente';
 
 function fmtPrecio(n) {
   return n ? 'U$S ' + Number(n).toLocaleString('es-BO') : 'Consultar precio';
@@ -105,7 +182,7 @@ function specsLinea(p) {
   ].filter(Boolean).join(' · ');
 }
 
-function tarjeta(p, telefonoContacto, nombreAgente) {
+function tarjeta(p) {
   const fotos = p.fotos || [];
   const fotoPrincipal = fotos.length
     ? `<img class="foto-principal" id="foto-${p.id}" src="${fotos[0]}" alt="${p.titulo}">`
@@ -115,7 +192,7 @@ function tarjeta(p, telefonoContacto, nombreAgente) {
     : '';
   const msg = encodeURIComponent(`Hola ${nombreAgente}, vi tu propiedad "${p.titulo}" en tu vitrina y me interesa. ¿Seguís disponible?`);
   const contactar = telefonoContacto
-    ? `<a class="contactar" href="https://wa.me/${telefonoContacto.replace(/\D/g, '')}?text=${msg}" target="_blank">💬 Contactar por WhatsApp</a>`
+    ? `<a class="contactar" href="https://wa.me/${telefonoContacto.replace(/\D/g, '')}?text=${msg}" target="_blank">💬 WhatsApp</a>`
     : '';
   return `
   <div class="card">
@@ -129,7 +206,10 @@ function tarjeta(p, telefonoContacto, nombreAgente) {
       <div><span class="badge-op">${p.operacion}</span></div>
       <div class="specs">${p.tipo}${p.zona ? ' · ' + p.zona : ''}${specsLinea(p) ? '<br>' + specsLinea(p) : ''}</div>
       ${p.descripcion ? `<div class="descripcion">${p.descripcion}</div>` : ''}
-      ${contactar}
+      <div class="fila-acciones">
+        ${contactar}
+        <button type="button" class="btn-pdf" onclick="descargarPDF('${p.id}')">📄 PDF</button>
+      </div>
     </div>
   </div>`;
 }
@@ -139,6 +219,53 @@ function cambiarFoto(id, url, el) {
   el.parentElement.querySelectorAll('img').forEach((i) => i.classList.remove('activa'));
   el.classList.add('activa');
 }
+
+function descargarPDF(id) {
+  const p = porId[id];
+  if (!p) return;
+  const fotos = p.fotos || [];
+  $('#printArea').innerHTML = `
+    <h1 style="margin:0 0 4px">${p.titulo}</h1>
+    <p style="margin:0 0 14px;color:#555">${nombreAgente} · Sofymar IA</p>
+    ${fotos[0] ? `<img class="foto-print" src="${fotos[0]}">` : ''}
+    ${fotos.length > 1 ? `<div class="miniaturas-print">${fotos.slice(1, 7).map((f) => `<img src="${f}">`).join('')}</div>` : ''}
+    <p style="font-size:20px;font-weight:800;margin:14px 0 4px">${fmtPrecio(p.precio)} — ${p.operacion.toUpperCase()}</p>
+    <p style="margin:0 0 10px">${p.tipo}${p.zona ? ' · ' + p.zona : ''}${specsLinea(p) ? ' · ' + specsLinea(p) : ''}</p>
+    ${p.descripcion ? `<p style="margin:0 0 14px">${p.descripcion}</p>` : ''}
+    ${telefonoContacto ? `<p style="margin-top:20px">Contacto: ${nombreAgente} — WhatsApp ${telefonoContacto}</p>` : ''}
+  `;
+  window.print();
+}
+
+function renderChips() {
+  const porTipo = {};
+  for (const p of propiedades) porTipo[p.tipo] = (porTipo[p.tipo] || 0) + 1;
+  const tipos = Object.keys(porTipo);
+  $('#chips').innerHTML =
+    `<button type="button" class="chip ${filtroTipo === '' ? 'activo' : ''}" onclick="elegirTipo('')">Todos (${propiedades.length})</button>` +
+    tipos.map((t) => `<button type="button" class="chip ${filtroTipo === t ? 'activo' : ''}" onclick="elegirTipo('${t}')">${NOMBRE_TIPO[t] || t} (${porTipo[t]})</button>`).join('');
+}
+
+function elegirTipo(t) {
+  filtroTipo = t;
+  renderChips();
+  renderGrid();
+}
+
+function renderGrid() {
+  let lista = filtroTipo ? propiedades.filter((p) => p.tipo === filtroTipo) : propiedades.slice();
+  if (orden === 'precioAsc') lista.sort((a, b) => (a.precio || Infinity) - (b.precio || Infinity));
+  else if (orden === 'precioDesc') lista.sort((a, b) => (b.precio || -Infinity) - (a.precio || -Infinity));
+  $('#contenido').className = 'grid';
+  $('#contenido').innerHTML = lista.length
+    ? lista.map(tarjeta).join('')
+    : '<p class="vacio" style="grid-column:1/-1">No hay propiedades en esta categoría.</p>';
+}
+
+$('#ordenPrecio').addEventListener('change', (e) => {
+  orden = e.target.value;
+  renderGrid();
+});
 
 async function iniciar() {
   if (!agenteId) {
@@ -156,26 +283,23 @@ async function iniciar() {
       return;
     }
     const data = await resp.json();
-    document.title = 'Inventario de ' + data.agente.nombre + ' — Sofymar IA';
-    $('#tituloHeader').textContent = 'Inventario de ' + data.agente.nombre;
-    $('#subHeader').textContent = data.propiedades.length
-      ? data.propiedades.length + ' propiedad(es) disponible(s)'
+    propiedades = data.propiedades;
+    porId = Object.fromEntries(propiedades.map((p) => [p.id, p]));
+    nombreAgente = data.agente.nombre;
+    telefonoContacto = data.agente.telefonoContacto;
+    document.title = 'Inventario de ' + nombreAgente + ' — Sofymar IA';
+    $('#tituloHeader').textContent = 'Inventario de ' + nombreAgente;
+    $('#subHeader').textContent = propiedades.length
+      ? propiedades.length + ' propiedad(es) disponible(s)'
       : 'Todavía no hay propiedades cargadas';
-    if (!data.propiedades.length) {
+    if (!propiedades.length) {
       $('#contenido').className = 'vacio';
       $('#contenido').textContent = 'Todavía no hay propiedades disponibles en este inventario.';
       return;
     }
-    const porTipo = {};
-    for (const p of data.propiedades) {
-      (porTipo[p.tipo] = porTipo[p.tipo] || []).push(p);
-    }
-    $('#contenido').className = '';
-    $('#contenido').innerHTML = Object.keys(porTipo).map((tipo) => `
-      <div class="seccion">
-        <h2>${NOMBRE_TIPO[tipo] || tipo} <span class="cant">(${porTipo[tipo].length})</span></h2>
-        <div class="grid">${porTipo[tipo].map((p) => tarjeta(p, data.agente.telefonoContacto, data.agente.nombre)).join('')}</div>
-      </div>`).join('');
+    $('#barraFiltros').style.display = 'flex';
+    renderChips();
+    renderGrid();
   } catch {
     $('#subHeader').textContent = 'Error al cargar.';
     $('#contenido').className = 'vacio';
@@ -183,6 +307,52 @@ async function iniciar() {
   }
 }
 iniciar();
+
+// ---------- Chat con IA sobre el inventario ----------
+$('#btnAbrirIA').addEventListener('click', () => {
+  $('#panelIA').classList.add('abierto');
+  if (!$('#logIA').children.length) {
+    agregarMensajeIA('Preguntame qué tiene disponible ' + (nombreAgente || 'el agente') + '. Por ejemplo: "¿qué terrenos tenés?" o "casas bajo 150000".');
+  }
+  $('#inputIA').focus();
+});
+$('#btnCerrarIA').addEventListener('click', () => $('#panelIA').classList.remove('abierto'));
+
+function agregarMensajeUsuario(texto) {
+  const div = document.createElement('div');
+  div.className = 'msg-usuario';
+  div.textContent = texto;
+  $('#logIA').appendChild(div);
+  $('#logIA').scrollTop = $('#logIA').scrollHeight;
+}
+function agregarMensajeIA(texto) {
+  const div = document.createElement('div');
+  div.className = 'msg-ia';
+  div.textContent = texto;
+  $('#logIA').appendChild(div);
+  $('#logIA').scrollTop = $('#logIA').scrollHeight;
+}
+
+async function preguntarIA() {
+  const input = $('#inputIA');
+  const pregunta = input.value.trim();
+  if (!pregunta) return;
+  agregarMensajeUsuario(pregunta);
+  input.value = '';
+  agregarMensajeIA('Buscando...');
+  const placeholder = $('#logIA').lastElementChild;
+  try {
+    const resp = await fetch('/api/vitrina/' + agenteId + '/preguntar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pregunta }),
+    });
+    const data = await resp.json();
+    placeholder.textContent = data.respuesta || data.error || 'No pude responder esa pregunta.';
+  } catch {
+    placeholder.textContent = 'Error al consultar la IA — intentá de nuevo.';
+  }
+}
+$('#btnEnviarIA').addEventListener('click', preguntarIA);
+$('#inputIA').addEventListener('keydown', (e) => { if (e.key === 'Enter') preguntarIA(); });
 </script>
 </body>
 </html>

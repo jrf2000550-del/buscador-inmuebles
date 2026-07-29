@@ -2107,6 +2107,23 @@ async function resumirConIA(req, listados) {
   return proveedor === 'gemini' ? await llamarGemini(PROMPT_RESUMIR, user, false) : await llamarClaude(PROMPT_RESUMIR, user, null);
 }
 
+// Chat de la vitrina pública: un colega agente pregunta en lenguaje natural
+// por el inventario y la IA responde SOLO con lo que hay en esa lista — no
+// tiene acceso a nada más (ni a otros agentes, ni a los portales).
+const PROMPT_VITRINA =
+  'Sos el asistente virtual de un agente inmobiliario en Santa Cruz de la Sierra, Bolivia. Un colega ' +
+  'agente te escribe preguntando por el inventario disponible de este agente. Respondé SOLO en base a ' +
+  'la lista de propiedades que te paso — nunca inventes datos, precios ni propiedades que no estén ahí. ' +
+  'Si hay propiedades que calzan, listalas con título, precio y zona en un mensaje corto y amigable ' +
+  '(texto plano, sin markdown). Si ninguna calza, decilo con claridad y mencioná qué otras categorías sí ' +
+  'hay disponibles.';
+
+async function preguntarInventarioConIA(pregunta, propiedades, nombreAgente) {
+  const user = `Agente: ${nombreAgente}\n\nInventario disponible:\n${JSON.stringify(propiedades)}\n\nPregunta del colega: ${pregunta}`;
+  const proveedor = estadoIA().proveedor;
+  return proveedor === 'gemini' ? await llamarGemini(PROMPT_VITRINA, user, false) : await llamarClaude(PROMPT_VITRINA, user, null);
+}
+
 // ---------- Links directos (portales sin lectura automática) ----------
 
 function linksExternos(req) {
@@ -2452,6 +2469,32 @@ async function manejarRequest(req, res) {
       agente: { nombre: agenteVitrina.nombre, telefonoContacto: agenteVitrina.telefonoContacto || '' },
       propiedades,
     });
+  }
+
+  // Chat con IA sobre esa vitrina — pública también, mismo criterio que el
+  // GET de arriba: cualquier colega con el link puede preguntar, sin cuenta.
+  const mVitrinaPreguntar = url.pathname.match(/^\/api\/vitrina\/([^/]+)\/preguntar$/);
+  if (mVitrinaPreguntar && req.method === 'POST') {
+    const [, id] = mVitrinaPreguntar;
+    const agenteVitrina = leerAgentes().find((a) => a.id === id);
+    if (!agenteVitrina) return json(res, 404, { error: 'No existe esa vitrina.' });
+    const body = await leerBody(req);
+    const pregunta = (body.pregunta || '').trim();
+    if (!pregunta) return json(res, 400, { error: 'Falta la pregunta.' });
+    if (!iaDisponible()) return json(res, 200, { respuesta: null, error: 'La IA no está configurada todavía.' });
+    const propiedades = leerInventario(id)
+      .filter((i) => i.categoria === 'mio' && i.estado === 'disponible')
+      .map((i) => ({
+        titulo: i.titulo, tipo: i.tipo, operacion: i.operacion, precio: i.precio, zona: i.zona,
+        dormitorios: i.dormitorios, banos: i.banos, m2Terreno: i.m2Terreno, m2Construccion: i.m2Construccion,
+        descripcion: i.descripcion,
+      }));
+    try {
+      const respuesta = await preguntarInventarioConIA(pregunta, propiedades, agenteVitrina.nombre);
+      return json(res, 200, { respuesta });
+    } catch (e) {
+      return json(res, 500, { error: 'Error al consultar la IA.' });
+    }
   }
 
   // En modo multiagente, toda otra ruta /api/* exige una key válida.
