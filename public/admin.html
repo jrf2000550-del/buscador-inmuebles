@@ -121,6 +121,13 @@
       <div id="listaFeedback"></div>
     </div>
     <div class="panel">
+      <h2>Actividad de inventario <span id="badgeActividadInv" class="badge nueva" style="display:none; margin-left:4px"></span></h2>
+      <p style="color:var(--muted); font-size:13px; margin:0 0 12px">
+        Cuándo un agente agrega o ajusta una propiedad en su "Mi Inventario" (a mano o sincronizando Drive).
+      </p>
+      <div id="listaActividadInv"></div>
+    </div>
+    <div class="panel">
       <h2>Alertas de match <span id="badgeAlertas" class="badge nueva" style="display:none; margin-left:4px"></span></h2>
       <p style="color:var(--muted); font-size:13px; margin:0 0 12px">
         Se generan solas cuando una propiedad nueva (cargada a mano o detectada en Mobiliario App)
@@ -167,7 +174,7 @@ async function entrar() {
   }
   $('#gate').style.display = 'none';
   $('#app').style.display = 'block';
-  await Promise.all([cargarVisitas(), cargarAgentes(), cargarAlertas(), cargarFeedback()]);
+  await Promise.all([cargarVisitas(), cargarAgentes(), cargarAlertas(), cargarFeedback(), cargarActividadInventario()]);
   return true;
 }
 
@@ -201,6 +208,47 @@ async function cargarFeedback() {
 async function marcarFeedbackLeido(id) {
   await adminFetch(`/api/admin/feedback/${id}/leido`, { method: 'POST' });
   cargarFeedback();
+}
+
+function textoActividadInv(a) {
+  if (a.accion === 'sync-drive') {
+    return `Sincronizó su Drive: ${a.detalle.creados} nueva(s), ${a.detalle.actualizados} actualizada(s)`;
+  }
+  if (a.accion === 'creado') return `Agregó "${a.detalle.titulo}" (${a.detalle.tipo})`;
+  if (a.detalle.precio !== undefined) return `Ajustó el precio de "${a.detalle.titulo}"`;
+  return `Actualizó "${a.detalle.titulo}"`;
+}
+
+async function cargarActividadInventario() {
+  const lista = await (await adminFetch('/api/admin/actividad-inventario')).json();
+  const noLeidos = lista.filter((a) => !a.leido).length;
+  const badge = $('#badgeActividadInv');
+  if (noLeidos) {
+    badge.style.display = 'inline-block';
+    badge.textContent = noLeidos + ' sin leer';
+  } else {
+    badge.style.display = 'none';
+  }
+  if (!lista.length) {
+    $('#listaActividadInv').innerHTML = '<p class="vacio">Todavía no hay actividad de inventario.</p>';
+    return;
+  }
+  $('#listaActividadInv').innerHTML = lista.map((a) => `
+    <div class="alerta" style="${a.leido ? 'opacity:.55' : ''}">
+      <div class="fila1">
+        <span class="titulo">${a.agenteNombre}</span>
+        ${a.leido ? '' : '<span class="badge nueva">nuevo</span>'}
+      </div>
+      <div class="detalle">${textoActividadInv(a)}</div>
+      <div class="detalle" style="color:var(--muted-2)">${new Date(a.fecha).toLocaleString('es-BO')}</div>
+      ${a.leido ? '' : `<div class="acciones"><button type="button" class="chico fantasma" onclick="marcarActividadInvLeida('${a.id}')">Marcar como leído</button></div>`}
+    </div>
+  `).join('');
+}
+
+async function marcarActividadInvLeida(id) {
+  await adminFetch(`/api/admin/actividad-inventario/${id}/leida`, { method: 'POST' });
+  cargarActividadInventario();
 }
 
 $('#btnEntrar').addEventListener('click', async () => {

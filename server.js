@@ -333,9 +333,13 @@ async function listarSubcarpetasDrive(raizId) {
 // categoría ("TERRENOS", "ALQUILER") que contienen las carpetas de cada
 // propiedad, así que el nombre de la propiedad manda si tiene una pista
 // propia, y si no, se usa la de la carpeta que la contiene.
+// Orden importa: cuando una carpeta de categoría es ambigua (ej.
+// "DEPARTAMENTOS/OFICINAS" contiene ambas palabras), gana la primera que
+// matchea — "departamento" va antes que "oficina" porque en la práctica
+// la mayoría de esas carpetas mixtas son edificios de departamentos.
 const PISTAS_TIPO = [
-  [/quinta/i, 'quinta'], [/terreno/i, 'terreno'], [/edificio/i, 'edificio'],
-  [/oficina/i, 'oficina'], [/departamento/i, 'departamento'], [/dep[oó]sito|galp[oó]n/i, 'deposito'],
+  [/quinta/i, 'quinta'], [/terreno/i, 'terreno'], [/departamento/i, 'departamento'], [/edificio/i, 'edificio'],
+  [/oficina/i, 'oficina'], [/dep[oó]sito|galp[oó]n/i, 'deposito'],
   [/local/i, 'local'], [/rancho/i, 'rancho'], [/hotel/i, 'hotel'], [/colegio/i, 'colegio'],
   [/cochera/i, 'cochera'], [/casa/i, 'casa'],
 ];
@@ -428,6 +432,7 @@ async function sincronizarInventarioDesdeDrive(agenteId) {
         driveFolderId: prop.folderId,
         fotosCarpetaDrive: `https://drive.google.com/drive/folders/${prop.folderId}`,
         fotos,
+        historialPrecios: [],
       });
       creados++;
     } else {
@@ -436,6 +441,9 @@ async function sincronizarInventarioDesdeDrive(agenteId) {
     }
   }
   guardarInventario(lista, agenteId);
+  if (creados || actualizados) {
+    registrarActividadInventario(agenteId, 'sync-drive', { creados, actualizados });
+  }
   return { ok: true, carpetas: propiedades.length, creados, actualizados };
 }
 
@@ -475,6 +483,42 @@ function leerFeedback() {
 function guardarFeedbackLista(lista) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(FEEDBACK_FILE, JSON.stringify(lista, null, 2));
+}
+
+// ---------- Actividad de inventario (para el panel admin de José Luis) ----------
+// Un solo archivo compartido, igual que feedback: José Luis quiere ver de
+// un vistazo cuándo un agente (Ingrid, Lizett, etc.) agrega o actualiza una
+// captación en su propio inventario, sin tener que entrar a revisar cuenta
+// por cuenta.
+
+const ACTIVIDAD_INVENTARIO_FILE = path.join(DATA_DIR, 'actividad-inventario.json');
+
+function leerActividadInventario() {
+  try {
+    return JSON.parse(fs.readFileSync(ACTIVIDAD_INVENTARIO_FILE, 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
+function guardarActividadInventario(lista) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(ACTIVIDAD_INVENTARIO_FILE, JSON.stringify(lista, null, 2));
+}
+
+function registrarActividadInventario(agenteId, accion, detalle) {
+  const agente = leerAgentes().find((a) => a.id === agenteId);
+  const lista = leerActividadInventario();
+  lista.unshift({
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    agenteId,
+    agenteNombre: agente ? agente.nombre : 'Agente',
+    accion, // 'creado' | 'actualizado' | 'sync-drive'
+    detalle,
+    fecha: new Date().toISOString(),
+    leido: false,
+  });
+  guardarActividadInventario(lista);
 }
 
 // ---------- Prueba gratuita (2 semanas desde el registro) ----------
@@ -2413,6 +2457,20 @@ async function manejarRequest(req, res) {
       return json(res, 200, { ok: true });
     }
 
+    if (url.pathname === '/api/admin/actividad-inventario' && req.method === 'GET') {
+      return json(res, 200, leerActividadInventario());
+    }
+    const mActividadLeida = url.pathname.match(/^\/api\/admin\/actividad-inventario\/([^/]+)\/leida$/);
+    if (mActividadLeida && req.method === 'POST') {
+      const [, id] = mActividadLeida;
+      const lista = leerActividadInventario();
+      const idx = lista.findIndex((a) => a.id === id);
+      if (idx === -1) return json(res, 404, { error: 'No existe esa actividad' });
+      lista[idx].leido = true;
+      guardarActividadInventario(lista);
+      return json(res, 200, { ok: true });
+    }
+
     if (url.pathname === '/api/admin/visitas' && req.method === 'GET') {
       const visitas = leerVisitas();
       const dias = Object.entries(visitas).sort(([a], [b]) => (a < b ? 1 : -1));
@@ -2699,14 +2757,39 @@ async function manejarRequest(req, res) {
       ultimaConfirmacion: new Date().toISOString(),
       comentarios: [],
       fotos: [],
+      historialPrecios: [],
       ...camposInventario(body),
     };
+    if (nuevo.precio) nuevo.historialPrecios = [{ precio: nuevo.precio, fecha: nuevo.creado }];
     if (nuevo.fotosCarpetaDrive) nuevo.fotos = await resolverFotosDrive(nuevo.fotosCarpetaDrive);
     const lista = leerInventario(agenteId);
     lista.unshift(nuevo);
     guardarInventario(lista, agenteId);
     const alertas = matchearInventarioConRequerimientos(nuevo, agenteId);
+    registrarActividadInventario(agenteId, 'creado', { titulo: nuevo.titulo, tipo: nuevo.tipo });
     return json(res, 200, { item: nuevo, matches: alertas.length });
+  }
+
+  // Cambio de precio rápido (desde el listado, sin abrir el formulario
+  // completo) — endpoint aparte del PUT genérico porque ese reconstruye
+  // TODOS los campos desde camposInventario y borraría el resto de datos
+  // del ítem si solo mandamos el precio. Cada cambio queda en
+  // historialPrecios para poder ver la evolución de precio con el tiempo.
+  const mInventarioPrecio = url.pathname.match(/^\/api\/inventario\/([^/]+)\/precio$/);
+  if (mInventarioPrecio && req.method === 'PUT') {
+    const [, id] = mInventarioPrecio;
+    const body = await leerBody(req);
+    const precio = parsePrecio(body.precio);
+    const lista = leerInventario(agenteId);
+    const idx = lista.findIndex((i) => i.id === id);
+    if (idx === -1) return json(res, 404, { error: 'No existe ese ítem de inventario.' });
+    const historial = lista[idx].historialPrecios || [];
+    const cambio = precio !== lista[idx].precio;
+    if (cambio) historial.push({ precio, fecha: new Date().toISOString() });
+    lista[idx] = { ...lista[idx], precio, historialPrecios: historial };
+    guardarInventario(lista, agenteId);
+    if (cambio) registrarActividadInventario(agenteId, 'actualizado', { titulo: lista[idx].titulo, precio });
+    return json(res, 200, lista[idx]);
   }
 
   const mInventarioConfirmar = url.pathname.match(/^\/api\/inventario\/([^/]+)\/confirmar$/);
@@ -2764,10 +2847,14 @@ async function manejarRequest(req, res) {
     if (idx === -1) return json(res, 404, { error: 'No existe ese ítem de inventario.' });
     const body = await leerBody(req);
     const actualizado = { ...lista[idx], ...camposInventario(body) };
+    if (actualizado.precio !== lista[idx].precio) {
+      actualizado.historialPrecios = [...(lista[idx].historialPrecios || []), { precio: actualizado.precio, fecha: new Date().toISOString() }];
+    }
     if (actualizado.fotosCarpetaDrive) actualizado.fotos = await resolverFotosDrive(actualizado.fotosCarpetaDrive);
     lista[idx] = actualizado;
     guardarInventario(lista, agenteId);
     const alertas = matchearInventarioConRequerimientos(actualizado, agenteId);
+    registrarActividadInventario(agenteId, 'actualizado', { titulo: actualizado.titulo, tipo: actualizado.tipo });
     return json(res, 200, { item: actualizado, matches: alertas.length });
   }
   if (url.pathname.startsWith('/api/inventario/') && req.method === 'DELETE') {

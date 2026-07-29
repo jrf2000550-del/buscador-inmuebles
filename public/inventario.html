@@ -104,6 +104,9 @@
   .fila-telefono label { flex: 1; min-width: 200px; }
   .fotos-preview { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
   .fotos-preview img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
+  .precio-inline { color: var(--accent-light); font-weight: 700; cursor: pointer; border-bottom: 1px dashed var(--muted-2); }
+  .precio-inline:hover { color: var(--text); }
+  .precio-inline input { width: 110px; font-size: 12.5px; padding: 3px 6px; }
 </style>
 </head>
 <body>
@@ -306,6 +309,26 @@ $('#btnGuardarTelefono').addEventListener('click', async () => {
   setTimeout(() => { $('#msgTelefono').style.display = 'none'; }, 2000);
 });
 
+function activarEdicionPrecio(id) {
+  const item = ultimoInventario.find((i) => i.id === id);
+  const span = $('#precio-' + id);
+  span.innerHTML = `<input type="number" id="inputPrecio-${id}" value="${item.precio || ''}" placeholder="U$S">`;
+  const input = $('#inputPrecio-' + id);
+  input.focus();
+  input.select();
+  input.addEventListener('blur', () => guardarPrecioInline(id));
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
+}
+async function guardarPrecioInline(id) {
+  const input = $('#inputPrecio-' + id);
+  if (!input) return;
+  const precio = input.value.trim();
+  await apiFetch('/api/inventario/' + id + '/precio', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ precio }),
+  });
+  cargarInventario();
+}
+
 async function refrescarFotos(id) {
   await apiFetch('/api/inventario/' + id + '/refrescar-fotos', { method: 'POST' });
   cargarInventario();
@@ -428,7 +451,8 @@ function renderLista() {
         ${vencido ? '<span class="badge vencido">sin confirmar hace ' + dias + ' día(s)</span>' : ''}
       </div>
       <div class="detalle">
-        ${i.operacion} · ${i.tipo} · ${i.zona || 'sin zona'}${i.precio ? ' · U$S ' + Number(i.precio).toLocaleString('es-BO') : ''}
+        ${i.operacion} · ${i.tipo} · ${i.zona || 'sin zona'} ·
+        <span class="precio-inline" id="precio-${i.id}" onclick="activarEdicionPrecio('${i.id}')">${i.precio ? 'U$S ' + Number(i.precio).toLocaleString('es-BO') : '+ agregar precio'}</span>
         ${[i.dormitorios ? i.dormitorios + ' dorm.' : null, i.banos ? i.banos + ' baños' : null, i.m2Terreno ? 'terreno ' + i.m2Terreno + ' m²' : null, i.m2Construccion ? 'constr. ' + i.m2Construccion + ' m²' : null].filter(Boolean).join(' · ')}
         ${i.categoria === 'otro' && i.captadorNombre ? '<br>Captador: ' + i.captadorNombre + (i.captadorTelefono ? ' (' + i.captadorTelefono + ')' : '') : ''}
       </div>
