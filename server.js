@@ -278,13 +278,12 @@ function idCarpetaDrive(url) {
   return m ? m[0] : null;
 }
 
-async function resolverFotosDrive(carpetaUrl) {
-  const id = idCarpetaDrive(carpetaUrl);
-  if (!id || !process.env.GOOGLE_API_KEY) return [];
+async function listarImagenesDirectas(folderId) {
+  if (!process.env.GOOGLE_API_KEY) return [];
   try {
-    const q = encodeURIComponent(`'${id}' in parents and mimeType contains 'image/' and trashed = false`);
+    const q = encodeURIComponent(`'${folderId}' in parents and mimeType contains 'image/' and trashed = false`);
     const resp = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&pageSize=50&key=${process.env.GOOGLE_API_KEY}`
+      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&pageSize=100&key=${process.env.GOOGLE_API_KEY}`
     );
     if (!resp.ok) return [];
     const data = await resp.json();
@@ -292,6 +291,26 @@ async function resolverFotosDrive(carpetaUrl) {
   } catch {
     return [];
   }
+}
+
+// Muchos agentes no ponen las fotos sueltas en la carpeta de la propiedad,
+// sino organizadas en sub-subcarpetas propias (ej. "Exterior"/"Interior") —
+// si no hay fotos directas, se junta lo que haya un nivel más adentro.
+async function resolverFotosCarpeta(folderId, profundidad = 1) {
+  const directas = await listarImagenesDirectas(folderId);
+  if (directas.length || profundidad <= 0) return directas;
+  const subs = await listarSubcarpetasDrive(folderId);
+  let todas = [];
+  for (const sub of subs) {
+    todas = todas.concat(await resolverFotosCarpeta(sub.id, profundidad - 1));
+  }
+  return todas;
+}
+
+async function resolverFotosDrive(carpetaUrl) {
+  const id = idCarpetaDrive(carpetaUrl);
+  if (!id || !process.env.GOOGLE_API_KEY) return [];
+  return resolverFotosCarpeta(id, 1);
 }
 
 async function listarSubcarpetasDrive(raizId) {
@@ -364,7 +383,7 @@ async function sincronizarInventarioDesdeDrive(agenteId) {
         });
       }
     } else {
-      const fotosDirectas = await resolverFotosDrive(`https://drive.google.com/drive/folders/${cat.id}`);
+      const fotosDirectas = await listarImagenesDirectas(cat.id);
       if (fotosDirectas.length) {
         propiedades.push({
           folderId: cat.id,
@@ -383,7 +402,7 @@ async function sincronizarInventarioDesdeDrive(agenteId) {
   let creados = 0;
   let actualizados = 0;
   for (const prop of propiedades) {
-    const fotos = prop.fotos || (await resolverFotosDrive(`https://drive.google.com/drive/folders/${prop.folderId}`));
+    const fotos = prop.fotos || (await resolverFotosCarpeta(prop.folderId, 1));
     const idx = lista.findIndex((i) => i.driveFolderId === prop.folderId);
     if (idx === -1) {
       lista.unshift({
