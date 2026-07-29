@@ -1,14 +1,18 @@
 // Service Worker — requisito real de Chrome para poder "instalar" la app
 // (sin esto, el manifest.json solo sirve de bookmark con ícono, no aparece
-// el banner de instalar de verdad). Estrategia: stale-while-revalidate para
-// los archivos estáticos de la app (HTML/CSS/JS/ícono) — responde al toque
-// desde caché y en paralelo pide una versión fresca para la próxima vez, así
-// abre rápido incluso con mala señal. Las llamadas a /api/* NUNCA se cachean
-// acá: esta app es 100% datos en vivo (búsquedas, requerimientos, alertas),
-// mostrar una respuesta vieja de la API sería activamente confuso, no útil.
+// el banner de instalar de verdad).
+//
+// Estrategia: network-first para HTML (navegaciones) — la app se sigue
+// desarrollando activamente, así que mostrar una versión vieja apenas se
+// publica un cambio es activamente confuso (pasó: cambios ya en el server
+// que no se veían en el teléfono pinneado hasta el segundo o tercer abrir).
+// Con la red disponible SIEMPRE se pide la versión fresca; el caché solo
+// entra como respaldo si no hay conexión. Para íconos/manifest (que casi
+// nunca cambian) sí sirve stale-while-revalidate, para que abran rápido.
+// Las llamadas a /api/* NUNCA se cachean: esta app es 100% datos en vivo.
 
-const CACHE = 'buscador-v1';
-const PRECACHE = ['/', '/manifest.json', '/icon.svg'];
+const CACHE = 'buscador-v2';
+const PRECACHE = ['/manifest.json', '/icon.svg'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(PRECACHE)));
@@ -24,11 +28,25 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  // Solo GET, mismo origen, y nunca /api/* — todo lo demás (POST, CDN
-  // externo de Leaflet, llamadas a la API) pasa directo a la red sin que
-  // este service worker lo toque.
   if (e.request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
 
+  // Navegación (HTML) o cualquier .html explícito: red primero, caché solo
+  // como respaldo offline.
+  const esHtml = e.request.mode === 'navigate' || url.pathname.endsWith('.html') || url.pathname === '/';
+  if (esHtml) {
+    e.respondWith(
+      fetch(e.request)
+        .then((resp) => {
+          if (resp.ok) caches.open(CACHE).then((c) => c.put(e.request, resp.clone()));
+          return resp;
+        })
+        .catch(() => caches.match(e.request))
+    );
+    return;
+  }
+
+  // Estáticos (ícono, manifest): stale-while-revalidate, abren rápido y se
+  // actualizan solos en segundo plano.
   e.respondWith(
     caches.match(e.request).then((cached) => {
       const fresco = fetch(e.request)
