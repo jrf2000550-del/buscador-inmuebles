@@ -26,6 +26,8 @@
   header { padding: 22px 20px 18px; text-align: center; border-bottom: 1px solid var(--border-soft); }
   header h1 { font-size: 19px; font-weight: 800; letter-spacing: -.02em; margin: 0 0 4px; }
   header p { color: var(--muted); font-size: 12.5px; margin: 0; }
+  header img#fotoAgenteHeader { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; border: 2px solid var(--border); margin: 0 auto 10px; display: block; }
+  header p#subAgenteHeader { margin: 0 0 4px; }
   main { max-width: 1100px; margin: 0 auto; padding: 18px 16px 90px; }
 
   .barra-filtros {
@@ -125,7 +127,9 @@
 <body>
 
 <header>
+  <img id="fotoAgenteHeader" style="display:none">
   <h1 id="tituloHeader">Inventario</h1>
+  <p id="subAgenteHeader" style="display:none"></p>
   <p id="subHeader">Cargando...</p>
 </header>
 <main>
@@ -284,6 +288,15 @@ async function iniciar() {
     telefonoContacto = data.agente.telefonoContacto;
     document.title = 'Inventario de ' + nombreAgente + ' — Sofymar IA';
     $('#tituloHeader').textContent = 'Inventario de ' + nombreAgente;
+    if (data.agente.fotoPerfil) {
+      $('#fotoAgenteHeader').src = data.agente.fotoPerfil;
+      $('#fotoAgenteHeader').style.display = 'block';
+    }
+    const agenteDatos = [data.agente.inmobiliaria, data.agente.oficina].filter(Boolean).join(' · ');
+    if (agenteDatos) {
+      $('#subAgenteHeader').textContent = agenteDatos;
+      $('#subAgenteHeader').style.display = 'block';
+    }
     $('#subHeader').textContent = propiedades.length
       ? propiedades.length + ' propiedad(es) disponible(s)'
       : 'Todavía no hay propiedades cargadas';

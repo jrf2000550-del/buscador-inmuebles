@@ -132,7 +132,7 @@ function emailValido(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || '').trim());
 }
 
-function registrarAgente({ nombre, email, password }) {
+function registrarAgente({ nombre, email, password, inmobiliaria, oficina }) {
   nombre = String(nombre || '').trim();
   email = String(email || '').trim().toLowerCase();
   if (!nombre) throw new Error('Falta el nombre.');
@@ -148,6 +148,8 @@ function registrarAgente({ nombre, email, password }) {
     id: crypto.randomBytes(4).toString('hex'),
     nombre,
     email,
+    inmobiliaria: String(inmobiliaria || '').trim(),
+    oficina: String(oficina || '').trim(),
     passwordSalt: salt,
     passwordHash: hash,
     apiKey: 'sof_' + crypto.randomBytes(24).toString('hex'),
@@ -2430,7 +2432,18 @@ async function manejarRequest(req, res) {
   if (url.pathname === '/api/whoami' && req.method === 'GET') {
     return json(res, 200, {
       requiereAuth,
-      agente: agente ? { id: agente.id, nombre: agente.nombre, trial: estadoTrial(agente), telefonoContacto: agente.telefonoContacto || '', driveRaizUrl: agente.driveRaizUrl || '' } : null,
+      agente: agente
+        ? {
+            id: agente.id,
+            nombre: agente.nombre,
+            trial: estadoTrial(agente),
+            telefonoContacto: agente.telefonoContacto || '',
+            driveRaizUrl: agente.driveRaizUrl || '',
+            inmobiliaria: agente.inmobiliaria || '',
+            oficina: agente.oficina || '',
+            fotoPerfil: agente.fotoPerfil || '',
+          }
+        : null,
     });
   }
 
@@ -2681,7 +2694,13 @@ async function manejarRequest(req, res) {
         carpetaDriveUrl: i.fotosCarpetaDrive || null,
       }));
     return json(res, 200, {
-      agente: { nombre: agenteVitrina.nombre, telefonoContacto: agenteVitrina.telefonoContacto || '' },
+      agente: {
+        nombre: agenteVitrina.nombre,
+        telefonoContacto: agenteVitrina.telefonoContacto || '',
+        inmobiliaria: agenteVitrina.inmobiliaria || '',
+        oficina: agenteVitrina.oficina || '',
+        fotoPerfil: agenteVitrina.fotoPerfil || '',
+      },
       propiedades,
     });
   }
@@ -2890,9 +2909,27 @@ async function manejarRequest(req, res) {
     const actualizado = { ...lista[idx] };
     if (body.telefonoContacto !== undefined) actualizado.telefonoContacto = String(body.telefonoContacto).trim();
     if (body.driveRaizUrl !== undefined) actualizado.driveRaizUrl = String(body.driveRaizUrl).trim();
+    if (body.inmobiliaria !== undefined) actualizado.inmobiliaria = String(body.inmobiliaria).trim();
+    if (body.oficina !== undefined) actualizado.oficina = String(body.oficina).trim();
+    // Límite generoso pero real: la foto ya viene comprimida/achicada del
+    // lado del navegador antes de mandarse, esto es solo un tope de
+    // seguridad para no dejar crecer agentes.json sin control.
+    if (body.fotoPerfil !== undefined) {
+      if (body.fotoPerfil && body.fotoPerfil.length > 400000) {
+        return json(res, 400, { error: 'La foto es muy pesada — probá con otra más liviana.' });
+      }
+      actualizado.fotoPerfil = body.fotoPerfil;
+    }
     lista[idx] = actualizado;
     guardarAgentes(lista);
-    return json(res, 200, { ok: true, telefonoContacto: actualizado.telefonoContacto || '', driveRaizUrl: actualizado.driveRaizUrl || '' });
+    return json(res, 200, {
+      ok: true,
+      telefonoContacto: actualizado.telefonoContacto || '',
+      driveRaizUrl: actualizado.driveRaizUrl || '',
+      inmobiliaria: actualizado.inmobiliaria || '',
+      oficina: actualizado.oficina || '',
+      fotoPerfil: actualizado.fotoPerfil || '',
+    });
   }
 
   // Red entre agentes: preguntar en lenguaje natural si algún OTRO agente
