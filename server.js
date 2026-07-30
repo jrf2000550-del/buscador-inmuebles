@@ -236,6 +236,30 @@ function leerInventario(agenteId) {
   }
 }
 
+// Red entre agentes: cualquier agente logueado puede CONSULTAR (nunca
+// escribir) el inventario "mio"/disponible de los demás — mismo nivel de
+// detalle que ya es público en la vitrina de cada uno, así que no es una
+// exposición nueva, solo una forma de encontrarlo sin tener el link. La
+// seguridad de escritura no depende de esta función: cada endpoint de
+// escritura de inventario sigue usando el agenteId de la propia sesión
+// autenticada, nunca uno pasado en la consulta — así que ver esto acá no
+// abre ninguna puerta para alterar datos de otro agente.
+function leerInventarioDeTodosLosAgentes(excluirAgenteId) {
+  const resultado = [];
+  for (const agente of leerAgentes()) {
+    if (agente.id === excluirAgenteId || agente.activo === false) continue;
+    const propias = leerInventario(agente.id)
+      .filter((i) => i.categoria === 'mio' && i.estado === 'disponible')
+      .map((i) => ({
+        titulo: i.titulo, tipo: i.tipo, operacion: i.operacion, precio: i.precio, zona: i.zona,
+        dormitorios: i.dormitorios, banos: i.banos, m2Terreno: i.m2Terreno, m2Construccion: i.m2Construccion,
+        descripcion: i.descripcion, agenteNombre: agente.nombre, agenteTelefono: agente.telefonoContacto || '',
+      }));
+    resultado.push(...propias);
+  }
+  return resultado;
+}
+
 function guardarInventario(lista, agenteId) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(archivoInventario(agenteId), JSON.stringify(lista, null, 2));
@@ -2282,6 +2306,24 @@ async function preguntarInventarioConIA(pregunta, propiedades, nombreAgente) {
   return proveedor === 'gemini' ? await llamarGemini(PROMPT_VITRINA, user, false) : await llamarClaude(PROMPT_VITRINA, user, null);
 }
 
+// Red entre agentes: un agente logueado pregunta si algún OTRO agente de la
+// plataforma tiene algo que calce con lo que busca su cliente. El filtrado
+// de "qué califica" ya lo hizo matcheaPropiedad (determinístico, mismo
+// criterio de siempre) — acá la IA solo redacta la respuesta sobre
+// resultados YA decididos, nunca decide ella sola qué es un match.
+const PROMPT_RED =
+  'Sos el asistente de un agente inmobiliario en Santa Cruz de la Sierra, Bolivia. Este agente te ' +
+  'pregunta si algún OTRO agente de la plataforma tiene una propiedad que calce con lo que busca su ' +
+  'cliente. Te paso una lista YA FILTRADA de propiedades que coinciden — tu trabajo es redactar una ' +
+  'respuesta corta y clara (texto plano, sin markdown) diciendo qué agente tiene qué, con sus datos de ' +
+  'contacto, para que lo pueda llamar. Nunca inventes datos que no estén en la lista.';
+
+async function preguntarRedConIA(pregunta, matches) {
+  const user = `Coincidencias encontradas en el inventario de otros agentes:\n${JSON.stringify(matches)}\n\nPregunta original: ${pregunta}`;
+  const proveedor = estadoIA().proveedor;
+  return proveedor === 'gemini' ? await llamarGemini(PROMPT_RED, user, false) : await llamarClaude(PROMPT_RED, user, null);
+}
+
 // ---------- Links directos (portales sin lectura automática) ----------
 
 function linksExternos(req) {
@@ -2851,6 +2893,47 @@ async function manejarRequest(req, res) {
     lista[idx] = actualizado;
     guardarAgentes(lista);
     return json(res, 200, { ok: true, telefonoContacto: actualizado.telefonoContacto || '', driveRaizUrl: actualizado.driveRaizUrl || '' });
+  }
+
+  // Red entre agentes: preguntar en lenguaje natural si algún OTRO agente
+  // de la plataforma tiene una propiedad que calce. SOLO LECTURA — nunca
+  // escribe en el inventario de nadie (ver leerInventarioDeTodosLosAgentes).
+  // Si nadie en la red lo tiene, cae automáticamente a buscar en los
+  // portales reales (mismo motor que la búsqueda normal).
+  if (url.pathname === '/api/red/preguntar' && req.method === 'POST') {
+    const body = await leerBody(req);
+    const pregunta = (body.pregunta || '').trim();
+    if (!pregunta) return json(res, 400, { error: 'Falta la pregunta.' });
+    if (!iaDisponible()) return json(res, 200, { respuesta: null, error: 'La IA no está configurada todavía.' });
+
+    const criterios = await interpretarConIA(pregunta);
+    if (!criterios || !criterios.tipo) {
+      return json(res, 200, { respuesta: 'No entendí bien qué estás buscando — probá ser más específico (tipo de propiedad, zona, dormitorios).' });
+    }
+    criterios.operacion = criterios.operacion === 'alquiler' ? 'alquiler' : 'venta';
+
+    const propiedadesRed = leerInventarioDeTodosLosAgentes(agenteId);
+    const candidatas = propiedadesRed.filter((p) => p.tipo === criterios.tipo && p.operacion === criterios.operacion);
+    const matches = candidatas.filter((p) => matcheaPropiedad({ ...p }, criterios));
+
+    if (matches.length) {
+      const respuesta = await preguntarRedConIA(pregunta, matches);
+      return json(res, 200, { respuesta, matches: matches.length, fuente: 'red' });
+    }
+
+    try {
+      const resultadoPortales = await buscarTodo(criterios);
+      return json(res, 200, {
+        respuesta: resultadoPortales.listados.length
+          ? `Ningún colega tiene esto en su inventario todavía. Busqué en los portales y encontré ${resultadoPortales.listados.length} propiedad(es) — mirá la sección de resultados.`
+          : 'Ningún colega tiene esto en su inventario, y tampoco encontré nada en los portales con esos criterios por ahora.',
+        matches: 0,
+        fuente: 'portales',
+        listados: resultadoPortales.listados.slice(0, 12),
+      });
+    } catch {
+      return json(res, 200, { respuesta: 'Ningún colega tiene esto en su inventario. No pude buscar en los portales en este momento — probá de nuevo en un rato.', matches: 0, fuente: 'ninguna' });
+    }
   }
 
   // ---------- Inventario propio ----------

@@ -368,6 +368,43 @@
   .sesion { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
   .sesion strong { color: var(--text); }
   .sesion button { padding: 7px 13px; font-size: 12px; }
+
+  /* Chat de IA flotante (vitrina pública y red entre agentes comparten el look) */
+  .btn-ia-flotante {
+    position: fixed; bottom: 18px; right: 18px; z-index: 20;
+    background: linear-gradient(135deg, var(--accent-light), var(--accent) 60%, var(--accent-2)); color: var(--accent-ink);
+    border: 0; border-radius: 999px; padding: 13px 18px; font-weight: 800; font-size: 13.5px; cursor: pointer;
+    box-shadow: var(--shadow-lg); font-family: inherit;
+  }
+  .panel-ia {
+    position: fixed; bottom: 18px; right: 18px; z-index: 21; width: 340px; max-width: calc(100vw - 24px);
+    max-height: 70vh; background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--border-soft);
+    border-radius: var(--radius); box-shadow: var(--shadow-lg); display: none; flex-direction: column; overflow: hidden;
+  }
+  .panel-ia.abierto { display: flex; }
+  .panel-ia .cabecera-ia { padding: 12px 14px; border-bottom: 1px solid var(--border-soft); display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .panel-ia .cabecera-ia span { font-weight: 800; font-size: 13px; }
+  .panel-ia .cabecera-ia .acciones-cabecera { display: flex; align-items: center; gap: 4px; }
+  .panel-ia .cabecera-ia button { background: none; border: 0; color: var(--muted); font-size: 17px; cursor: pointer; line-height: 1; padding: 4px; box-shadow: none; }
+  .panel-ia .cabecera-ia button.activo { color: var(--accent-light); }
+  .panel-ia .log-ia { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; font-size: 13.5px; -webkit-overflow-scrolling: touch; }
+  .panel-ia .msg-usuario { align-self: flex-end; background: var(--accent-soft); color: var(--text); padding: 9px 12px; border-radius: 12px 12px 2px 12px; max-width: 85%; }
+  .panel-ia .msg-ia { align-self: flex-start; background: var(--panel-3); color: var(--text); padding: 9px 12px; border-radius: 12px 12px 12px 2px; max-width: 90%; white-space: pre-wrap; line-height: 1.5; }
+  .panel-ia .fila-ia { display: flex; gap: 6px; padding: 10px; padding-bottom: max(10px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border-soft); align-items: center; }
+  .campo-ia-wrap { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; }
+  .campo-ia-wrap input { width: 100%; background: var(--panel-2); border: 1.5px solid var(--border); color: var(--text); border-radius: 999px; padding: 10px 40px 10px 14px; font-size: 14px; font-family: inherit; }
+  .panel-ia .fila-ia > button:last-child { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 999px; width: 40px; height: 40px; font-weight: 800; cursor: pointer; font-family: inherit; flex: none; font-size: 15px; box-shadow: none; }
+  .btn-mic-ia {
+    position: absolute; right: 2px; top: 50%; transform: translateY(-50%); width: 32px; height: 32px;
+    padding: 0 !important; border-radius: 999px; background: none !important; color: var(--muted) !important;
+    font-size: 16px; border: none !important; display: flex; align-items: center; justify-content: center; box-shadow: none;
+  }
+  .btn-mic-ia.grabando { color: var(--danger) !important; animation: pulsar-mic-red 1.1s infinite; }
+  @keyframes pulsar-mic-red { 0%, 100% { box-shadow: 0 0 0 0 rgba(243,107,107,.5); } 50% { box-shadow: 0 0 0 8px rgba(243,107,107,0); } }
+  @media (max-width: 560px) {
+    .panel-ia { left: 0; right: 0; top: 0; bottom: 0; width: auto; max-width: none; max-height: none; border-radius: 0; padding-top: env(safe-area-inset-top); }
+    .btn-ia-flotante { right: 14px; bottom: max(14px, env(safe-area-inset-bottom)); padding: 13px 18px; font-size: 13.5px; }
+  }
 </style>
 </head>
 <body>
@@ -427,6 +464,26 @@
     </div>
   </div>
 </div>
+
+<button type="button" class="btn-ia-flotante" id="btnAbrirRed" style="display:none">🔎 Preguntale a la red</button>
+<div class="panel-ia" id="panelRed">
+  <div class="cabecera-ia">
+    <span>🔎 Red de agentes</span>
+    <div class="acciones-cabecera">
+      <button type="button" id="btnMutearRed" class="activo" title="Silenciar respuesta hablada">🔊</button>
+      <button type="button" id="btnCerrarRed" title="Cerrar">×</button>
+    </div>
+  </div>
+  <div class="log-ia" id="logRed"></div>
+  <div class="fila-ia">
+    <div class="campo-ia-wrap">
+      <input type="text" id="inputRed" placeholder="Ej: ¿quién tiene depas de 2 dormitorios en Equipetrol?">
+      <button type="button" class="btn-mic-ia" id="btnMicRed" title="Hablar">🎤</button>
+    </div>
+    <button type="button" id="btnEnviarRed">➤</button>
+  </div>
+</div>
+
 <header>
   <div class="logo">
     <div class="icono">
@@ -756,6 +813,7 @@ async function iniciarSesion() {
       location.reload();
     });
     $('#btnFeedback').addEventListener('click', () => { $('#modalFeedback').style.display = 'flex'; });
+    $('#btnAbrirRed').style.display = 'inline-flex';
 
     // Aviso de prueba gratuita — nunca bloquea, solo informa (José Luis
     // revoca acceso a mano desde /admin.html si corresponde).
@@ -1859,6 +1917,86 @@ if (!SR) {
     if (dictando) detenerDictado();
     else iniciarDictado();
   });
+}
+
+// ---------- Red entre agentes: preguntarle a la IA quién más tiene algo ----------
+$('#btnAbrirRed').addEventListener('click', () => {
+  $('#panelRed').classList.add('abierto');
+  if (!$('#logRed').children.length) {
+    agregarMensajeRed('ia', 'Preguntame si algún colega tiene algo que tu cliente busca — por ejemplo: "¿quién tiene departamentos de 2 dormitorios en Equipetrol?". Si nadie de la red lo tiene, busco directo en los portales.');
+  }
+  $('#inputRed').focus();
+});
+$('#btnCerrarRed').addEventListener('click', () => $('#panelRed').classList.remove('abierto'));
+
+function agregarMensajeRed(quien, texto) {
+  const div = document.createElement('div');
+  div.className = quien === 'usuario' ? 'msg-usuario' : 'msg-ia';
+  div.textContent = texto;
+  $('#logRed').appendChild(div);
+  $('#logRed').scrollTop = $('#logRed').scrollHeight;
+  return div;
+}
+
+async function preguntarRed() {
+  const input = $('#inputRed');
+  const pregunta = input.value.trim();
+  if (!pregunta) return;
+  agregarMensajeRed('usuario', pregunta);
+  input.value = '';
+  const placeholder = agregarMensajeRed('ia', 'Buscando en la red y, si hace falta, en los portales...');
+  try {
+    const resp = await apiFetch('/api/red/preguntar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pregunta }),
+    });
+    const data = await resp.json();
+    const texto = data.respuesta || data.error || 'No pude responder esa pregunta.';
+    placeholder.textContent = texto;
+    if (data.respuesta) hablarRed(data.respuesta);
+  } catch {
+    placeholder.textContent = 'Error al consultar — intentá de nuevo.';
+  }
+}
+$('#btnEnviarRed').addEventListener('click', preguntarRed);
+$('#inputRed').addEventListener('keydown', (e) => { if (e.key === 'Enter') preguntarRed(); });
+
+let vozActivaRed = true;
+$('#btnMutearRed').addEventListener('click', () => {
+  vozActivaRed = !vozActivaRed;
+  $('#btnMutearRed').textContent = vozActivaRed ? '🔊' : '🔇';
+  $('#btnMutearRed').classList.toggle('activo', vozActivaRed);
+  if (!vozActivaRed && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+});
+function hablarRed(texto) {
+  if (!vozActivaRed || !('speechSynthesis' in window)) return;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(texto);
+  u.lang = 'es-BO';
+  window.speechSynthesis.speak(u);
+}
+
+if (SR) {
+  let recRed = null;
+  let grabandoRed = false;
+  $('#btnMicRed').addEventListener('click', () => {
+    if (grabandoRed) { recRed.stop(); return; }
+    recRed = new SR();
+    recRed.lang = 'es-BO';
+    recRed.continuous = false;
+    recRed.interimResults = false;
+    recRed.onresult = (e) => { $('#inputRed').value = e.results[0][0].transcript; };
+    recRed.onend = () => {
+      grabandoRed = false;
+      $('#btnMicRed').classList.remove('grabando');
+      if ($('#inputRed').value.trim()) preguntarRed();
+    };
+    recRed.onerror = () => { grabandoRed = false; $('#btnMicRed').classList.remove('grabando'); };
+    recRed.start();
+    grabandoRed = true;
+    $('#btnMicRed').classList.add('grabando');
+  });
+} else {
+  $('#btnMicRed').style.display = 'none';
 }
 </script>
 </body>
