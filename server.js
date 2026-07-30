@@ -2955,7 +2955,7 @@ async function manejarRequest(req, res) {
 
     if (matches.length) {
       const respuesta = await preguntarRedConIA(pregunta, matches);
-      return json(res, 200, { respuesta, matches: matches.length, fuente: 'red' });
+      return json(res, 200, { respuesta, matches: matches.length, fuente: 'red', propiedades: matches.slice(0, 8) });
     }
 
     try {

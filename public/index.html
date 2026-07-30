@@ -401,6 +401,20 @@
   }
   .btn-mic-ia.grabando { color: var(--danger) !important; animation: pulsar-mic-red 1.1s infinite; }
   @keyframes pulsar-mic-red { 0%, 100% { box-shadow: 0 0 0 0 rgba(243,107,107,.5); } 50% { box-shadow: 0 0 0 8px rgba(243,107,107,0); } }
+
+  /* Tarjetas de propiedad dentro del chat de la red — mismo lenguaje visual
+     que las tarjetas de resultados normales, versión compacta para el panel. */
+  .tarjetas-red-wrap { display: flex; flex-direction: column; gap: 8px; align-self: stretch; }
+  .tarjeta-red { background: var(--panel-3); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; font-size: 12.5px; }
+  .tarjeta-red-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  .tarjeta-red-titulo { font-weight: 800; }
+  .tarjeta-red-precio { color: var(--accent-light); font-weight: 800; white-space: nowrap; }
+  .tarjeta-red-specs { color: var(--muted); margin-top: 4px; line-height: 1.5; }
+  .tarjeta-red-sub { color: var(--muted-2); font-size: 11px; margin-top: 4px; display: block; }
+  .tarjeta-red-wa {
+    display: inline-block; margin-top: 8px; background: linear-gradient(135deg, #25d366, #128c7e); color: #fff;
+    font-weight: 800; padding: 7px 11px; border-radius: var(--radius-xs); font-size: 12px; text-decoration: none;
+  }
   @media (max-width: 560px) {
     .panel-ia { left: 0; right: 0; top: 0; bottom: 0; width: auto; max-width: none; max-height: none; border-radius: 0; padding-top: env(safe-area-inset-top); }
     .btn-ia-flotante { right: 14px; bottom: max(14px, env(safe-area-inset-bottom)); padding: 13px 18px; font-size: 13.5px; }
@@ -1940,6 +1954,48 @@ function agregarMensajeRed(quien, texto) {
   return div;
 }
 
+// Una propiedad de la red trae agenteNombre/agenteTelefono; una de portales
+// trae fuente/asesor/whatsapp/link — mismo template, contacto distinto.
+function tarjetaRed(p) {
+  const esRed = p.agenteNombre !== undefined;
+  const precioTxt = p.precio ? 'U$S ' + Number(p.precio).toLocaleString('es-BO') : 'Consultar precio';
+  const specs = [
+    p.dormitorios != null ? p.dormitorios + ' dorm.' : null,
+    p.banos != null ? p.banos + ' baños' : null,
+    p.m2Terreno ? 'terreno ' + p.m2Terreno + ' m²' : null,
+    p.m2Construccion ? 'constr. ' + p.m2Construccion + ' m²' : null,
+  ].filter(Boolean).join(' · ');
+  let contacto;
+  if (esRed) {
+    contacto = p.agenteTelefono
+      ? `<a class="tarjeta-red-wa" href="https://wa.me/${p.agenteTelefono.replace(/\D/g, '')}?text=${encodeURIComponent('Hola ' + p.agenteNombre + ', vi tu propiedad "' + p.titulo + '" en la red de agentes y tengo un cliente interesado. ¿Sigue disponible?')}" target="_blank">💬 WhatsApp a ${p.agenteNombre}</a>`
+      : `<span class="tarjeta-red-sub">Agente: ${p.agenteNombre} (sin teléfono cargado)</span>`;
+  } else {
+    contacto = p.whatsapp
+      ? `<a class="tarjeta-red-wa" href="https://wa.me/${p.whatsapp}?text=${encodeURIComponent('Hola ' + (p.asesor || '') + ', vi tu aviso "' + p.titulo + '" y tengo un cliente interesado. ¿Sigue disponible?')}" target="_blank">💬 WhatsApp al captador</a>`
+      : `<a class="tarjeta-red-wa" href="${p.link}" target="_blank">Ver aviso ↗</a>`;
+  }
+  return `
+    <div class="tarjeta-red">
+      <div class="tarjeta-red-top">
+        <span class="tarjeta-red-titulo">${p.titulo}</span>
+        <span class="tarjeta-red-precio">${precioTxt}</span>
+      </div>
+      <div class="tarjeta-red-specs">${p.tipo || ''}${p.zona ? ' · ' + p.zona : ''}${specs ? '<br>' + specs : ''}</div>
+      ${esRed ? '' : `<div class="tarjeta-red-sub">${p.fuente}${p.asesor ? ' · ' + p.asesor : ''}</div>`}
+      ${contacto}
+    </div>`;
+}
+
+function agregarTarjetasRed(propiedades) {
+  if (!propiedades || !propiedades.length) return;
+  const cont = document.createElement('div');
+  cont.className = 'tarjetas-red-wrap';
+  cont.innerHTML = propiedades.map(tarjetaRed).join('');
+  $('#logRed').appendChild(cont);
+  $('#logRed').scrollTop = $('#logRed').scrollHeight;
+}
+
 async function preguntarRed() {
   const input = $('#inputRed');
   const pregunta = input.value.trim();
@@ -1954,6 +2010,7 @@ async function preguntarRed() {
     const data = await resp.json();
     const texto = data.respuesta || data.error || 'No pude responder esa pregunta.';
     placeholder.textContent = texto;
+    agregarTarjetasRed(data.propiedades || data.listados);
     if (data.respuesta) hablarRed(data.respuesta);
   } catch {
     placeholder.textContent = 'Error al consultar — intentá de nuevo.';
