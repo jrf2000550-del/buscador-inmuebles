@@ -113,6 +113,11 @@
   .foto-perfil { width: 84px; height: 84px; border-radius: 50%; object-fit: cover; border: 2px solid var(--border); }
   .sin-foto-perfil { background: var(--panel-3); display: flex; align-items: center; justify-content: center; color: var(--muted-2); font-size: 11px; text-align: center; }
   .campos-perfil { flex: 1; min-width: 220px; display: grid; gap: 10px; }
+
+  .stats-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+  .stat-meta { background: var(--bg-elevated); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); padding: 12px; }
+  .stat-meta .num { font-size: 19px; font-weight: 800; }
+  .stat-meta .lbl { color: var(--muted); font-size: 11px; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -154,6 +159,22 @@
       <p id="msgPerfil" class="sub" style="display:none; margin-top:6px"></p>
     </div>
 
+    <div class="panel" id="panelMeta" style="display:none">
+      <h2>📊 Meta Ads</h2>
+      <p class="sub">Conectá tu cuenta publicitaria de Facebook/Instagram para ver cuánto gastás y cuántos leads te llegan, sin salir de la app.</p>
+      <div id="metaDesconectado">
+        <button type="button" class="chico" id="btnConectarMeta">Conectar Meta Ads</button>
+      </div>
+      <div id="metaConectado" style="display:none">
+        <p class="sub" style="margin:0 0 10px">Cuenta conectada: <strong id="metaCuentaNombre"></strong></p>
+        <div class="stats-meta" id="statsMeta"></div>
+        <div style="margin-top:12px; display:flex; gap:8px; align-items:center">
+          <button type="button" class="chico fantasma" id="btnDesconectarMeta">Desconectar</button>
+          <span id="msgMeta" class="sub" style="display:none"></span>
+        </div>
+      </div>
+    </div>
+
     <div class="panel" id="panelVitrina">
       <h2>🔗 Mi vitrina pública</h2>
       <p class="sub">Compartí este link con colegas — ven tu inventario disponible con fotos, tipo portal, y un botón para contactarte directo.</p>
@@ -177,6 +198,17 @@
         <button type="button" class="chico" id="btnSincronizarDrive">Guardar y sincronizar</button>
       </div>
       <p id="msgDrive" class="sub" style="display:none; margin-top:6px"></p>
+    </div>
+
+    <div class="panel" id="panelCaptura">
+      <h2>📋 Captura rápida (WhatsApp)</h2>
+      <p class="sub">Pegá el mensaje que te mandó otro agente ofreciéndote una propiedad y sumá las fotos — la IA lo interpreta y te prellena el formulario de abajo, en "Captación de otro agente".</p>
+      <textarea id="campoCapturaTexto" rows="3" placeholder="Ej: Hola Ingrid, tengo esta casa en Equipetrol, 3 dorm 2 baños, 250 m2 construidos, 180.000 negociable..." style="margin-top:10px"></textarea>
+      <div class="fila-telefono" style="margin-top:10px">
+        <label>Fotos del mensaje <input type="file" id="inputFotosCaptura" accept="image/*" multiple></label>
+        <button type="button" class="chico" id="btnInterpretarCaptura">✨ Interpretar y prellenar</button>
+      </div>
+      <p id="msgCaptura" class="sub" style="display:none; margin-top:6px"></p>
     </div>
 
     <div class="panel">
@@ -314,8 +346,66 @@ async function iniciar() {
     $('#campoOficina').value = quien.agente.oficina || '';
     mostrarFotoPerfil(quien.agente.fotoPerfil || '');
     cargarInventario();
+    cargarEstadoMeta();
   } catch {}
 }
+
+async function cargarEstadoMeta() {
+  const estado = await (await apiFetch('/api/meta/estado')).json();
+  if (!estado.configuradoServidor) return; // META_APP_ID/SECRET no configurados todavía
+  $('#panelMeta').style.display = 'block';
+  const params = new URLSearchParams(location.search);
+  if (params.get('metaConectado')) {
+    $('#msgMeta').style.display = 'block';
+    $('#msgMeta').style.color = 'var(--ok)';
+    $('#msgMeta').textContent = '¡Cuenta conectada!';
+    history.replaceState(null, '', location.pathname);
+  } else if (params.get('metaError')) {
+    $('#msgMeta').style.display = 'block';
+    $('#msgMeta').style.color = 'var(--danger)';
+    $('#msgMeta').textContent = 'No se pudo conectar — intentá de nuevo.';
+    history.replaceState(null, '', location.pathname);
+  }
+  if (estado.conectado) {
+    $('#metaDesconectado').style.display = 'none';
+    $('#metaConectado').style.display = 'block';
+    $('#metaCuentaNombre').textContent = estado.cuenta || '(sin nombre)';
+    cargarInsightsMeta();
+  } else {
+    $('#metaDesconectado').style.display = 'block';
+    $('#metaConectado').style.display = 'none';
+  }
+}
+
+async function cargarInsightsMeta() {
+  $('#statsMeta').innerHTML = '<p class="sub">Cargando...</p>';
+  try {
+    const data = await (await apiFetch('/api/meta/insights')).json();
+    if (data.error) {
+      $('#statsMeta').innerHTML = `<p class="sub" style="color:var(--danger)">${data.error}</p>`;
+      return;
+    }
+    const fmt = (n) => 'U$S ' + Number(n).toLocaleString('es-BO', { maximumFractionDigits: 2 });
+    $('#statsMeta').innerHTML = `
+      <div class="stat-meta"><div class="num">${fmt(data.gasto)}</div><div class="lbl">Gastado (30 días)</div></div>
+      <div class="stat-meta"><div class="num">${data.leads}</div><div class="lbl">Leads</div></div>
+      <div class="stat-meta"><div class="num">${data.costoPorLead != null ? fmt(data.costoPorLead) : '—'}</div><div class="lbl">Costo por lead</div></div>
+      <div class="stat-meta"><div class="num">${data.clics}</div><div class="lbl">Clics</div></div>
+    `;
+  } catch {
+    $('#statsMeta').innerHTML = '<p class="sub" style="color:var(--danger)">Error al cargar — intentá de nuevo.</p>';
+  }
+}
+
+$('#btnConectarMeta').addEventListener('click', async () => {
+  const data = await (await apiFetch('/api/meta/conectar')).json();
+  if (data.url) location.href = data.url;
+});
+
+$('#btnDesconectarMeta').addEventListener('click', async () => {
+  await apiFetch('/api/meta/desconectar', { method: 'POST' });
+  cargarEstadoMeta();
+});
 
 function mostrarFotoPerfil(fotoBase64) {
   if (fotoBase64) {
@@ -328,13 +418,13 @@ function mostrarFotoPerfil(fotoBase64) {
   }
 }
 
-function leerYRedimensionarImagen(file) {
+function leerYRedimensionarImagen(file, MAX) {
+  MAX = MAX || 300;
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
       const img = new Image();
       img.onload = () => {
-        const MAX = 300;
         let w = img.width;
         let h = img.height;
         if (w > h && w > MAX) { h = Math.round((h * MAX) / w); w = MAX; }
@@ -380,6 +470,65 @@ $('#btnGuardarPerfil').addEventListener('click', async () => {
     $('#msgPerfil').style.display = 'block';
     $('#msgPerfil').style.color = 'var(--danger)';
     $('#msgPerfil').textContent = 'Error al guardar — intentá de nuevo.';
+  }
+});
+
+// ---------- Captura rápida (WhatsApp) ----------
+// Las fotos se leen apenas se eligen (no hace falta apretar "Interpretar"
+// para adjuntarlas) — quedan pendientes hasta el próximo Guardar del
+// formulario, sea porque vino de acá o porque se abrió a mano.
+let fotosCapturaRapida = [];
+$('#inputFotosCaptura').addEventListener('change', async (e) => {
+  const archivos = Array.from(e.target.files).slice(0, 6);
+  $('#msgCaptura').style.display = 'block';
+  $('#msgCaptura').style.color = 'var(--muted)';
+  $('#msgCaptura').textContent = 'Procesando fotos...';
+  fotosCapturaRapida = await Promise.all(archivos.map((f) => leerYRedimensionarImagen(f, 700)));
+  $('#msgCaptura').style.color = 'var(--ok)';
+  $('#msgCaptura').textContent = fotosCapturaRapida.length + ' foto(s) lista(s) — se adjuntan al guardar.';
+});
+
+$('#btnInterpretarCaptura').addEventListener('click', async () => {
+  const texto = $('#campoCapturaTexto').value.trim();
+  if (!texto) {
+    $('#msgCaptura').style.display = 'block';
+    $('#msgCaptura').style.color = 'var(--danger)';
+    $('#msgCaptura').textContent = 'Pegá primero el texto del mensaje.';
+    return;
+  }
+  const btn = $('#btnInterpretarCaptura');
+  const original = btn.textContent;
+  btn.textContent = 'Interpretando...';
+  btn.disabled = true;
+  try {
+    const data = await (await apiFetch('/api/inventario/interpretar-captacion', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ texto }),
+    })).json();
+    if (data.error || !data.campos) {
+      $('#msgCaptura').style.display = 'block';
+      $('#msgCaptura').style.color = 'var(--danger)';
+      $('#msgCaptura').textContent = data.error || 'No pude interpretar el mensaje.';
+      return;
+    }
+    mostrarFormularioInv();
+    const f = $('#formInv');
+    f.elements.categoria.value = 'otro';
+    $('#campoCategoria').dispatchEvent(new Event('change'));
+    for (const [k, v] of Object.entries(data.campos)) {
+      if (f.elements[k] && v != null && v !== '') f.elements[k].value = v;
+    }
+    $('#tituloForm').textContent = 'Revisá y completá antes de guardar';
+    $('#msgCaptura').style.display = 'block';
+    $('#msgCaptura').style.color = 'var(--ok)';
+    $('#msgCaptura').textContent = 'Formulario prellenado — revisalo abajo y guardá.';
+    window.scrollTo({ top: $('#formInv').getBoundingClientRect().top + window.scrollY - 20, behavior: 'smooth' });
+  } catch {
+    $('#msgCaptura').style.display = 'block';
+    $('#msgCaptura').style.color = 'var(--danger)';
+    $('#msgCaptura').textContent = 'Error al interpretar — intentá de nuevo.';
+  } finally {
+    btn.textContent = original;
+    btn.disabled = false;
   }
 });
 
@@ -613,6 +762,7 @@ $('#formInv').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('#errorInv').style.display = 'none';
   const datos = Object.fromEntries(new FormData(e.target));
+  if (fotosCapturaRapida.length) datos.fotos = fotosCapturaRapida;
   try {
     if (editandoId) {
       await apiFetch('/api/inventario/' + editandoId, {
@@ -623,6 +773,10 @@ $('#formInv').addEventListener('submit', async (e) => {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(datos),
       });
     }
+    fotosCapturaRapida = [];
+    $('#inputFotosCaptura').value = '';
+    $('#campoCapturaTexto').value = '';
+    $('#msgCaptura').style.display = 'none';
     cancelarEdicionInv();
     cargarInventario();
   } catch (err) {

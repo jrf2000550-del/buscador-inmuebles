@@ -1426,6 +1426,18 @@ async function sincronizarMobiliario() {
 // los que un agente carga a mano desde el formulario. Mismo patrón que la
 // sincronización de Mobiliario App (flag + guardado de estado + setInterval).
 
+// ---------- Meta Ads (opcional) ----------
+// Cada agente conecta SU PROPIA cuenta publicitaria (OAuth) — José Luis solo
+// crea la app de Meta for Developers una vez (META_APP_ID/META_APP_SECRET en
+// el servidor); sin esas dos variables, todo lo de acá abajo queda
+// silenciosamente desactivado, mismo criterio que GOOGLE_API_KEY/GEMINI_API_KEY.
+function metaConfigurado() {
+  return !!(process.env.META_APP_ID && process.env.META_APP_SECRET);
+}
+function metaRedirectUri() {
+  return process.env.META_REDIRECT_URI || 'https://buscador-inmuebles-production.up.railway.app/api/meta/callback';
+}
+
 const GHL_SYNC_ESTADO_FILE = path.join(DATA_DIR, 'ghl-sync-estado.json');
 // Más frecuente que Mobiliario (6h): un lead nuevo importa más que una
 // propiedad nueva, y esta sincronización es barata (pocos contactos por
@@ -2249,6 +2261,63 @@ const SCHEMA_INTERPRETAR = {
   additionalProperties: false,
 };
 
+// Captura rápida de captaciones que llegan por WhatsApp: el agente pega el
+// texto del mensaje que le mandó OTRO agente ofreciéndole una propiedad, y
+// esto lo convierte en los campos del formulario de inventario (categoría
+// "otro") — mismo criterio que PROMPT_INTERPRETAR pero para una FICHA de
+// propiedad (un precio puntual, no un rango), no un pedido de cliente.
+const PROMPT_CAPTACION =
+  'Sos el asistente de un agente inmobiliario en Santa Cruz de la Sierra, Bolivia. Te paso el texto de un ' +
+  'mensaje de WhatsApp que le mandó OTRO agente ofreciéndole una propiedad (una captación). Extraé los ' +
+  'datos en JSON con EXACTAMENTE estas claves (todas presentes; "" en las de texto y null en las ' +
+  'numéricas si no aparecen): titulo (string corto y descriptivo — inventá uno breve si no hay), ' +
+  'tipo (casa|departamento|terreno|local|oficina|quinta|terreno-comercial|edificio|deposito|tinglado|' +
+  'rural|rancho|agricolas|ganaderas|cochera|hotel|colegio|proyecto), operacion (venta|alquiler), ' +
+  'precio (número en USD sin símbolos ni puntos de miles — si está en bolivianos, convertilo a USD ' +
+  'dividiendo por 6.96), zona (string), dormitorios (número), banos (número), m2Terreno (número), ' +
+  'm2Construccion (número), descripcion (string corto con el resto de detalles relevantes del mensaje), ' +
+  'captadorNombre (si el mensaje menciona o firma con el nombre de quién ofrece la propiedad, si no ""). ' +
+  'Nunca inventes precio ni m² que no estén en el texto. Devolvé SOLO el JSON, sin texto extra.';
+
+const SCHEMA_CAPTACION = {
+  type: 'object',
+  properties: {
+    titulo: { type: 'string' },
+    tipo: {
+      type: 'string',
+      enum: [
+        'casa', 'departamento', 'terreno', 'local', 'oficina',
+        'quinta', 'terreno-comercial', 'edificio', 'deposito', 'tinglado',
+        'rural', 'rancho', 'agricolas', 'ganaderas', 'cochera', 'hotel', 'colegio', 'proyecto',
+      ],
+    },
+    operacion: { type: 'string', enum: ['venta', 'alquiler'] },
+    precio: { type: ['number', 'null'] },
+    zona: { type: 'string' },
+    dormitorios: { type: ['number', 'null'] },
+    banos: { type: ['number', 'null'] },
+    m2Terreno: { type: ['number', 'null'] },
+    m2Construccion: { type: ['number', 'null'] },
+    descripcion: { type: 'string' },
+    captadorNombre: { type: 'string' },
+  },
+  required: ['titulo', 'tipo', 'operacion', 'precio', 'zona', 'dormitorios', 'banos', 'm2Terreno', 'm2Construccion', 'descripcion', 'captadorNombre'],
+  additionalProperties: false,
+};
+
+async function interpretarCaptacionConIA(texto) {
+  const proveedor = estadoIA().proveedor;
+  const text =
+    proveedor === 'gemini'
+      ? await llamarGemini(PROMPT_CAPTACION, texto, true)
+      : await llamarClaude(PROMPT_CAPTACION, texto, SCHEMA_CAPTACION);
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 const PROMPT_RESUMIR =
   'Sos el asistente de un agente inmobiliario. Te paso el requerimiento de un cliente y las propiedades encontradas. ' +
   'Devolvé un resumen corto y concreto en español, máximo 4 líneas, sin emojis: cuántas cumplen, ' +
@@ -2731,6 +2800,59 @@ async function manejarRequest(req, res) {
     }
   }
 
+  // Meta Ads — callback de OAuth: Meta redirige el navegador acá directo
+  // (sin X-Api-Key), así que tiene que ser público. El "state" es el
+  // agenteId que inició la conexión (viene de /api/meta/conectar, que sí
+  // exige sesión) — así se sabe a qué cuenta guardarle el token.
+  if (url.pathname === '/api/meta/callback' && req.method === 'GET') {
+    const code = url.searchParams.get('code');
+    const agenteIdCallback = url.searchParams.get('state');
+    if (!code || !agenteIdCallback || !metaConfigurado()) {
+      res.writeHead(302, { Location: '/inventario.html?metaError=1' });
+      return res.end();
+    }
+    try {
+      const tokenUrl =
+        `https://graph.facebook.com/v19.0/oauth/access_token?client_id=${process.env.META_APP_ID}` +
+        `&redirect_uri=${encodeURIComponent(metaRedirectUri())}&client_secret=${process.env.META_APP_SECRET}&code=${code}`;
+      const tokenData = await (await fetch(tokenUrl)).json();
+      if (!tokenData.access_token) throw new Error('Meta no devolvió access_token');
+
+      // Canje por token de larga duración (~60 días) — el que devuelve el
+      // login inicial dura solo horas.
+      const largoUrl =
+        `https://graph.facebook.com/v19.0/oauth/access_token?grant_type=fb_exchange_token` +
+        `&client_id=${process.env.META_APP_ID}&client_secret=${process.env.META_APP_SECRET}&fb_exchange_token=${tokenData.access_token}`;
+      const largoData = await (await fetch(largoUrl)).json();
+      const accessToken = largoData.access_token || tokenData.access_token;
+      const expiraEn = largoData.expires_in ? new Date(Date.now() + largoData.expires_in * 1000).toISOString() : null;
+
+      const cuentasData = await (
+        await fetch(`https://graph.facebook.com/v19.0/me/adaccounts?fields=id,name,account_id&access_token=${accessToken}`)
+      ).json();
+      const primeraCuenta = cuentasData.data && cuentasData.data[0];
+
+      const lista = leerAgentes();
+      const idx = lista.findIndex((a) => a.id === agenteIdCallback);
+      if (idx !== -1) {
+        lista[idx] = {
+          ...lista[idx],
+          metaAccessToken: accessToken,
+          metaTokenExpira: expiraEn,
+          metaAdAccountId: primeraCuenta ? primeraCuenta.id : null,
+          metaAdAccountNombre: primeraCuenta ? primeraCuenta.name : null,
+        };
+        guardarAgentes(lista);
+      }
+      res.writeHead(302, { Location: '/inventario.html?metaConectado=1' });
+      return res.end();
+    } catch (e) {
+      console.error('Error en callback de Meta Ads:', e.message);
+      res.writeHead(302, { Location: '/inventario.html?metaError=1' });
+      return res.end();
+    }
+  }
+
   // En modo multiagente, toda otra ruta /api/* exige una key válida.
   if (url.pathname.startsWith('/api/') && requiereAuth && !agente) {
     return json(res, 401, { error: 'Falta iniciar sesión o tener una clave de acceso válida.' });
@@ -2932,6 +3054,73 @@ async function manejarRequest(req, res) {
     });
   }
 
+  // Meta Ads: arma el link de login de Facebook para que el agente conecte
+  // SU PROPIA cuenta publicitaria — el "state" lleva el agenteId para que
+  // el callback (público, más arriba) sepa a quién guardarle el token.
+  if (url.pathname === '/api/meta/conectar' && req.method === 'GET') {
+    if (!metaConfigurado()) return json(res, 400, { error: 'Meta Ads no está configurado todavía en el servidor.' });
+    const params = new URLSearchParams({
+      client_id: process.env.META_APP_ID,
+      redirect_uri: metaRedirectUri(),
+      scope: 'ads_read',
+      state: agenteId,
+      response_type: 'code',
+    });
+    return json(res, 200, { url: 'https://www.facebook.com/v19.0/dialog/oauth?' + params.toString() });
+  }
+
+  if (url.pathname === '/api/meta/estado' && req.method === 'GET') {
+    const ag = leerAgentes().find((a) => a.id === agenteId);
+    return json(res, 200, {
+      configuradoServidor: metaConfigurado(),
+      conectado: !!(ag && ag.metaAccessToken),
+      cuenta: ag ? ag.metaAdAccountNombre || null : null,
+    });
+  }
+
+  if (url.pathname === '/api/meta/desconectar' && req.method === 'POST') {
+    const lista = leerAgentes();
+    const idx = lista.findIndex((a) => a.id === agenteId);
+    if (idx !== -1) {
+      lista[idx] = { ...lista[idx], metaAccessToken: null, metaTokenExpira: null, metaAdAccountId: null, metaAdAccountNombre: null };
+      guardarAgentes(lista);
+    }
+    return json(res, 200, { ok: true });
+  }
+
+  // Gasto/leads/costo por lead de la cuenta publicitaria conectada — solo
+  // lectura contra la Marketing API de Meta con el token propio del agente.
+  if (url.pathname === '/api/meta/insights' && req.method === 'GET') {
+    const ag = leerAgentes().find((a) => a.id === agenteId);
+    if (!ag || !ag.metaAccessToken || !ag.metaAdAccountId) {
+      return json(res, 400, { error: 'Todavía no conectaste tu cuenta de Meta Ads.' });
+    }
+    try {
+      const rango = url.searchParams.get('rango') || 'last_30d';
+      const campos = 'spend,impressions,clicks,actions';
+      const insightsUrl =
+        `https://graph.facebook.com/v19.0/${ag.metaAdAccountId}/insights?fields=${campos}` +
+        `&date_preset=${rango}&access_token=${ag.metaAccessToken}`;
+      const data = await (await fetch(insightsUrl)).json();
+      if (data.error) throw new Error(data.error.message);
+      const fila = (data.data && data.data[0]) || {};
+      const leads = (fila.actions || [])
+        .filter((a) => String(a.action_type || '').includes('lead'))
+        .reduce((s, a) => s + Number(a.value || 0), 0);
+      const gasto = Number(fila.spend) || 0;
+      return json(res, 200, {
+        cuenta: ag.metaAdAccountNombre,
+        gasto,
+        impresiones: Number(fila.impressions) || 0,
+        clics: Number(fila.clicks) || 0,
+        leads,
+        costoPorLead: leads ? gasto / leads : null,
+      });
+    } catch (e) {
+      return json(res, 500, { error: 'No se pudo leer Meta Ads: ' + e.message });
+    }
+  }
+
   // Red entre agentes: preguntar en lenguaje natural si algún OTRO agente
   // de la plataforma tiene una propiedad que calce. SOLO LECTURA — nunca
   // escribe en el inventario de nadie (ver leerInventarioDeTodosLosAgentes).
@@ -2984,6 +3173,20 @@ async function manejarRequest(req, res) {
     if (resultado.error) return json(res, 400, resultado);
     return json(res, 200, resultado);
   }
+  // Captura rápida: interpreta con IA el texto de un mensaje de WhatsApp de
+  // otro agente y devuelve los campos ya listos para prellenar el
+  // formulario — no guarda nada todavía, eso lo hace el POST normal cuando
+  // el agente confirma/edita y le da Guardar.
+  if (url.pathname === '/api/inventario/interpretar-captacion' && req.method === 'POST') {
+    const body = await leerBody(req);
+    const texto = (body.texto || '').trim();
+    if (!texto) return json(res, 400, { error: 'Falta el texto del mensaje.' });
+    if (!iaDisponible()) return json(res, 200, { error: 'La IA no está configurada todavía — completá el formulario a mano.' });
+    const campos = await interpretarCaptacionConIA(texto);
+    if (!campos) return json(res, 200, { error: 'No pude interpretar el mensaje — completá el formulario a mano.' });
+    return json(res, 200, { campos });
+  }
+
   if (url.pathname === '/api/inventario' && req.method === 'POST') {
     const body = await leerBody(req);
     const nuevo = {
@@ -2997,6 +3200,10 @@ async function manejarRequest(req, res) {
     };
     if (nuevo.precio) nuevo.historialPrecios = [{ precio: nuevo.precio, fecha: nuevo.creado }];
     if (nuevo.fotosCarpetaDrive) nuevo.fotos = await resolverFotosDrive(nuevo.fotosCarpetaDrive);
+    // Captura rápida (o cualquier alta manual): fotos subidas directo desde
+    // el navegador, ya redimensionadas ahí — solo aplica cuando no hay
+    // carpeta de Drive (esa gana, es la fuente "viva").
+    else if (Array.isArray(body.fotos)) nuevo.fotos = body.fotos.filter((f) => typeof f === 'string' && f.length < 700000).slice(0, 6);
     const lista = leerInventario(agenteId);
     lista.unshift(nuevo);
     guardarInventario(lista, agenteId);
@@ -3086,6 +3293,7 @@ async function manejarRequest(req, res) {
       actualizado.historialPrecios = [...(lista[idx].historialPrecios || []), { precio: actualizado.precio, fecha: new Date().toISOString() }];
     }
     if (actualizado.fotosCarpetaDrive) actualizado.fotos = await resolverFotosDrive(actualizado.fotosCarpetaDrive);
+    else if (Array.isArray(body.fotos)) actualizado.fotos = body.fotos.filter((f) => typeof f === 'string' && f.length < 700000).slice(0, 6);
     lista[idx] = actualizado;
     guardarInventario(lista, agenteId);
     const alertas = matchearInventarioConRequerimientos(actualizado, agenteId);
