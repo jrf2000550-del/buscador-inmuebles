@@ -291,6 +291,7 @@
   .card .fuente.remax { background: #3a0d17; color: #ff5a7a; }
   .card .fuente.bien { background: #0d2b3a; color: #5ac8ff; }
   .card .fuente.mobiliario { background: #1f0d3a; color: #b794ff; }
+  .card .fuente.scb { background: #0d3a1f; color: #6de89a; }
   .card .cerca { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .03em; color: var(--warn); }
   .card .aviso-precio { font-size: 11px; color: var(--warn); background: var(--warn-soft); padding: 4px 8px; border-radius: var(--radius-xs); margin: 4px 0; }
 
@@ -1428,7 +1429,7 @@ async function buscar(r) {
     <div class="card" data-link="${encodeURIComponent(i.link)}">
       ${i.imagen ? `<div class="imgwrap"><img src="${i.imagen}" loading="lazy" alt=""></div>` : ''}
       <div class="cuerpo">
-        <div class="fuente ${i.fuente === 'RE/MAX' ? 'remax' : i.fuente === 'BienInmuebles' ? 'bien' : i.fuente === 'Mobiliario App' ? 'mobiliario' : 'c21'}">${i.fuente}${i.oficina ? ' · ' + i.oficina : ''}</div>
+        <div class="fuente ${i.fuente === 'RE/MAX' ? 'remax' : i.fuente === 'BienInmuebles' ? 'bien' : i.fuente === 'Mobiliario App' ? 'mobiliario' : i.fuente === 'Santa Cruz Bienes Raíces' ? 'scb' : 'c21'}">${i.fuente}${i.oficina ? ' · ' + i.oficina : ''}</div>
         ${i.cercaPresupuesto ? '<div class="cerca">Cerca del presupuesto</div>' : ''}
         <div class="precio">${i.destaca ? '★ ' : ''}${i.precio ? 'U$S ' + i.precio.toLocaleString('es-BO') : 'Consultar precio'}</div>
         ${i.avisoPrecio ? `<div class="aviso-precio">⚠ ${i.avisoPrecio}</div>` : ''}
