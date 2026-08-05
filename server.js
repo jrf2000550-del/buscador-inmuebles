@@ -21,6 +21,9 @@ const crypto = require('crypto');
 })();
 
 const PORT = process.env.PORT || 3456;
+// Para armar links absolutos (páginas de presentación de propiedades) en los
+// mensajes que se le mandan al cliente por WhatsApp.
+const BASE_URL_APP = process.env.APP_BASE_URL || 'https://buscador-inmuebles-production.up.railway.app';
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'requerimientos.json');
 const AGENTES_FILE = path.join(DATA_DIR, 'agentes.json');
@@ -691,6 +694,104 @@ function marcarAlertaLeida(agenteId, id) {
   return true;
 }
 
+// ---------- Registro de envíos directos a clientes ----------
+// Cada vez que el barrido de matches manda propiedades directo al cliente
+// (no al agente) queda una entrada acá — quién, qué se le mandó, cuándo, y
+// si el envío salió bien. Es auditoría, no se usa para lógica de negocio.
+function archivoEnviosClientes(agenteId) {
+  return path.join(DATA_DIR, `envios-clientes-${agenteId || 'sin-agente'}.json`);
+}
+
+function leerEnviosClientes(agenteId) {
+  try {
+    return JSON.parse(fs.readFileSync(archivoEnviosClientes(agenteId), 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
+function envioPorId(agenteId, id) {
+  return leerEnviosClientes(agenteId).find((e) => e.id === id);
+}
+
+function registrarEnvioCliente(agenteId, datos) {
+  const lista = leerEnviosClientes(agenteId);
+  // ID con entropía real (16 bytes / 128 bits vía crypto, no Math.random) —
+  // este id es la ÚNICA protección de /p/:agenteId/:id y /revisar/:agenteId/:id
+  // (páginas públicas sin login, José Luis pidió blindarlas el 2026-08-05).
+  // La de /revisar/ expone el contacto real del captador y puede
+  // aprobar/rechazar en nombre del agente, así que necesita ser realmente
+  // imposible de adivinar, no solo "poco probable".
+  const registro = { id: crypto.randomBytes(16).toString('hex'), fecha: new Date().toISOString(), ...datos };
+  lista.unshift(registro);
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  // Tope de 2000 entradas por agente — auditoría reciente, no un log infinito.
+  fs.writeFileSync(archivoEnviosClientes(agenteId), JSON.stringify(lista.slice(0, 2000), null, 2));
+  return registro;
+}
+
+// ---------- Registro de captadores (agentes captadores de otras fuentes) ----------
+// José Luis lo pidió el 2026-08-04: necesita saber quién capturó cada
+// propiedad que le mandamos a un cliente, y su teléfono, para poder
+// contactarlo él mismo y gestionar la propiedad — sin esto, no hay forma de
+// ubicar al dueño real del aviso una vez que el link no se le manda al
+// cliente. Deduplicado por captador (mismo teléfono/email/nombre+fuente):
+// cada propiedad nueva que le encontramos se le agrega a su ficha existente
+// en vez de crear un captador repetido por cada propiedad.
+function archivoCaptadores(agenteId) {
+  return path.join(DATA_DIR, `captadores-${agenteId || 'sin-agente'}.json`);
+}
+
+function leerCaptadores(agenteId) {
+  try {
+    return JSON.parse(fs.readFileSync(archivoCaptadores(agenteId), 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
+function guardarCaptadores(agenteId, lista) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(archivoCaptadores(agenteId), JSON.stringify(lista, null, 2));
+}
+
+function claveCaptador(c) {
+  return (c.captadorTelefono || c.captadorEmail || `${c.captadorNombre}|${c.fuente}` || '').toLowerCase().trim();
+}
+
+// `it` es un item normalizado de buscarTodo (título, precio, link, asesor, etc.)
+function registrarCaptador(agenteId, it) {
+  if (!it.asesor && !it.telefono && !it.whatsapp && !it.email) return null; // nada que registrar
+  const datos = {
+    captadorNombre: it.asesor || 'Sin nombre',
+    captadorTelefono: it.telefono || it.whatsapp || '',
+    captadorEmail: it.email || '',
+    captadorOficina: it.oficina || '',
+    fuente: it.fuente,
+  };
+  const clave = claveCaptador(datos);
+  if (!clave) return null;
+  const lista = leerCaptadores(agenteId);
+  let captador = lista.find((c) => claveCaptador(c) === clave);
+  if (!captador) {
+    captador = { ...datos, primeraVez: new Date().toISOString(), propiedades: [] };
+    lista.unshift(captador);
+  } else {
+    // Se actualizan datos de contacto por si mejoraron (ej. antes solo nombre, ahora también teléfono).
+    if (it.telefono || it.whatsapp) captador.captadorTelefono = it.telefono || it.whatsapp;
+    if (it.email) captador.captadorEmail = it.email;
+    if (it.oficina) captador.captadorOficina = it.oficina;
+  }
+  const yaTiene = captador.propiedades.some((p) => p.link === it.link);
+  if (!yaTiene) {
+    captador.propiedades.unshift({ titulo: it.titulo, precio: it.precio, zona: it.zona, link: it.link || '', vistoEl: new Date().toISOString() });
+    captador.propiedades = captador.propiedades.slice(0, 100);
+  }
+  captador.ultimaVez = new Date().toISOString();
+  guardarCaptadores(agenteId, lista.slice(0, 1000));
+  return captador;
+}
+
 // Recorre data/requerimientos-*.json de TODOS los agentes y genera una
 // alerta por cada requerimiento (mismo tipo+operación) que matchee el item —
 // se usa cuando aparece una propiedad genuinamente NUEVA (no solo
@@ -930,6 +1031,9 @@ function normalizarC21(r, operacion) {
     lat: Number(r.lat) || null,
     lon: Number(r.lon) || null,
     imagen: Array.isArray(fotos) && fotos.length ? fotos[0] : null,
+    // Hasta 6 fotos para la galería de la página de presentación — C21 es la
+    // única de las 3 fuentes que expone más de una foto por aviso.
+    imagenes: Array.isArray(fotos) ? fotos.slice(0, 6) : [],
     link: 'https://c21.com.bo' + (r.urlCorrectaPropiedad || ''),
     descripcion: r.encabezado || '',
     oficina: r.nombreAfiliado || '',
@@ -1027,6 +1131,10 @@ function normalizarRemax(r) {
     lat: Number(loc.latitude) || null,
     lon: Number(loc.longitude) || null,
     imagen: r.default_imagen && (r.default_imagen.url || r.default_imagen.link) || null,
+    // RE/MAX solo expone una foto en este endpoint de búsqueda (el resto
+    // está en la página individual del aviso, no vale la pena un pedido
+    // extra por cada propiedad solo para más fotos).
+    imagenes: r.default_imagen && (r.default_imagen.url || r.default_imagen.link) ? [r.default_imagen.url || r.default_imagen.link] : [],
     link: 'https://remax.bo/propiedad/' + (r.slug || ''),
     descripcion: '',
     fecha: r.date_of_listing || null,
@@ -1121,6 +1229,7 @@ function normalizarBienInmuebles(r, tc, tipo) {
     lat: Number(r.latitud_cata) || null,
     lon: Number(r.longitud_cata) || null,
     imagen: r.nomb_img ? 'https://www.bieninmuebles.com.bo/admin/uploads/catalogo/thumbs/' + r.nomb_img : null,
+    imagenes: r.nomb_img ? ['https://www.bieninmuebles.com.bo/admin/uploads/catalogo/thumbs/' + r.nomb_img] : [],
     link: 'https://www.bieninmuebles.com.bo/property.php?id=' + r.id_cata,
     descripcion: r.nomb_cata || '',
     fecha: null, // el catálogo no expone fecha de publicación
@@ -1278,6 +1387,7 @@ function normalizarMobiliario(entidad, breadcrumbJson, url) {
     lat: entidad.geo?.latitude ?? null,
     lon: entidad.geo?.longitude ?? null,
     imagen: Array.isArray(entidad.image) && entidad.image.length ? entidad.image[0] : null,
+    imagenes: Array.isArray(entidad.image) ? entidad.image.slice(0, 6) : [],
     link: url,
     descripcion: entidad.description || '',
     oficina: '',
@@ -1503,8 +1613,23 @@ function parsearRequerimientoLibre(texto) {
   }
   if (zonaM) campos.zona = zonaM[1].trim();
   if (presM) {
-    const numeros = presM[1].match(/[\d.,]+/g);
-    if (numeros) campos.precioMax = numeros[numeros.length - 1].replace(/[.,]/g, '');
+    const textoPresupuesto = presM[1];
+    const numeros = textoPresupuesto.match(/[\d.,]+/g);
+    if (numeros) {
+      let valor = Number(numeros[numeros.length - 1].replace(/[.,]/g, ''));
+      // "450 mil" / "370-450 mil" → el número capturado (450) se queda corto
+      // por 1000x si no se detecta el "mil" — bug real encontrado revisando
+      // el de moneda: un presupuesto de 450.000 se buscaba como 450.
+      if (/\bmil\b/i.test(textoPresupuesto)) valor *= 1000;
+      campos.precioMax = String(valor);
+    }
+    // Antes esto se descartaba (el regex de arriba solo agarra dígitos) y
+    // TODO quedaba asumido en USD sin importar qué moneda haya dicho el
+    // lead — bug real reportado por José Luis: un presupuesto en Bolivianos
+    // se buscaba como si fuera en dólares (7x de diferencia real). Ahora se
+    // respeta la moneda si el texto la menciona explícitamente.
+    if (/\b(bs\.?|bob|bolivianos?)\b/i.test(textoPresupuesto)) campos.moneda = 'bob';
+    else if (/\b(usd|us\$|u\$s|d[oó]lares?)\b/i.test(textoPresupuesto)) campos.moneda = 'usd';
   }
   return campos;
 }
@@ -1523,6 +1648,363 @@ async function fetchContactosGHL(location, cursor) {
   });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.json();
+}
+
+// Busca/crea el contacto en GHL que representa el destino de las
+// notificaciones (el propio agente) — mismo patrón de upsert que ya usa el
+// resto del proyecto para no duplicar contactos. IMPORTANTE: si el teléfono
+// ya corresponde a un contacto existente (ej. el número real de Ingrid, ya
+// usado en otras conversaciones), NO se le pisa el nombre — un upsert previo
+// llegó a renombrar su contacto real a "Notificaciones..." por mandar `name`
+// sin querer. Acá se manda sin `name` a propósito.
+async function upsertContactoNotificacionesGHL(location, { telefono, correo }) {
+  const body = { locationId: location.locationId };
+  if (telefono) body.phone = telefono;
+  if (correo) body.email = correo;
+  const res = await fetch('https://services.leadconnectorhq.com/contacts/upsert', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + location.token,
+      Version: '2021-07-28',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status + ' al buscar/crear el contacto de notificaciones');
+  const data = await res.json();
+  const contactId = data.contact && data.contact.id;
+  if (!contactId) throw new Error('GHL no devolvió un contactId al hacer upsert');
+  return contactId;
+}
+
+// OJO — limitación real de la plataforma, no un bug: WhatsApp Business
+// rechaza cualquier mensaje de texto libre a un contacto que no le escribió
+// a este número en las últimas 24h ("customer service window"). El agente
+// (Ingrid, Jose Parejas) nunca le escribe a su propio bot, así que este
+// envío casi siempre va a fallar salvo que exista una plantilla de Meta
+// aprobada — por eso el correo (enviarEmailGHL) es el canal principal para
+// este aviso, no el WhatsApp.
+async function enviarWhatsAppGHL(location, contactId, mensaje) {
+  const res = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + location.token,
+      Version: '2021-07-28',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ type: 'WhatsApp', contactId, message: mensaje }),
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status + ' al mandar el WhatsApp de notificación');
+  return res.json();
+}
+
+async function enviarEmailGHL(location, contactId, correo, asunto, mensaje, esHtml) {
+  const res = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + location.token,
+      Version: '2021-07-28',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      type: 'Email',
+      contactId,
+      emailTo: correo,
+      subject: asunto,
+      html: esHtml ? mensaje : mensaje.replace(/\n/g, '<br>'),
+    }),
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status + ' al mandar el email de notificación');
+  return res.json();
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Manda las propiedades directo al CLIENTE dueño del requerimiento (no al
+// agente) — José Luis pidió esto explícitamente el 2026-08-04, con una
+// condición clara: la propiedad se presenta con su fuente real (C21,
+// RE/MAX, etc.) pero SIN el link directo al aviso del portal (eso expone
+// el teléfono/perfil del captador original — un cliente sin escrúpulos
+// podría saltarse a Ingrid). En vez del link crudo, se genera una página de
+// presentación propia (ver paginaPresentacionCliente / ruta GET /p/:id) con
+// la marca y el contacto de Ingrid — mismo criterio que ya usan los
+// captadores de esta plaza con sus propios PDF sin marca ajena. El contacto
+// real del captador (para que Ingrid pueda ubicarlo y coordinar) SÍ queda
+// guardado en el registro interno (registrarEnvioCliente), invisible para
+// el cliente.
+// Ya NO manda nada al cliente directo — José Luis lo pidió el 2026-08-05:
+// "la IA puede fallar", así que arma la propuesta y la deja en estado
+// `pendiente` para que el agente (Ingrid) la revise, saque lo que no sirva,
+// y recién ahí la apruebe (ver /revisar/:agenteId/:id y aprobarEnvioCliente
+// más abajo). El link de revisión se manda en el digest del barrido, no acá.
+async function prepararRevisionCliente(loc, agente, r, nuevos) {
+  const TOPE_OPCIONES = 8;
+  const top = nuevos.slice(0, TOPE_OPCIONES);
+
+  let contactId = r.contactId || null;
+  if (!contactId && r.telefono) {
+    contactId = await upsertContactoNotificacionesGHL(loc, { telefono: r.telefono });
+  }
+  if (!contactId) throw new Error('El requerimiento no tiene teléfono ni contactId — no hay a quién mandarle nada.');
+
+  const registro = registrarEnvioCliente(agente.id, {
+    agenteId: agente.id,
+    requerimientoId: r.id,
+    cliente: r.cliente,
+    telefono: r.telefono,
+    contactId,
+    zona: r.zona,
+    tipo: r.tipo,
+    estado: 'pendiente',
+    cantidadTotal: nuevos.length,
+    propiedades: top.map((it) => ({
+      titulo: it.titulo,
+      precio: it.precio,
+      zona: it.zona,
+      dormitorios: it.dormitorios ?? null,
+      banos: it.banos ?? null,
+      m2Terreno: it.m2Terreno ?? null,
+      m2Construccion: it.m2Construccion ?? null,
+      descripcion: it.descripcion || '',
+      imagen: it.imagen || '',
+      imagenes: Array.isArray(it.imagenes) && it.imagenes.length ? it.imagenes : it.imagen ? [it.imagen] : [],
+      // Visible solo para el agente en su propio panel/página de revisión — nunca en la página pública del cliente.
+      fuente: it.fuente,
+      link: it.link || '',
+      captadorNombre: it.asesor || '',
+      captadorTelefono: it.telefono || it.whatsapp || '',
+      captadorEmail: it.email || '',
+      captadorOficina: it.oficina || '',
+    })),
+  });
+
+  // Registro deduplicado por captador — separado del envío de arriba (que es
+  // por cliente/fecha) para que José Luis pueda ver de un vistazo TODAS las
+  // propiedades de un mismo captador, no una por envío. Se guarda ya en este
+  // paso (no hace falta esperar la aprobación) porque el dato del captador
+  // es útil de todas formas, se apruebe o no ese envío puntual.
+  for (const it of top) registrarCaptador(agente.id, it);
+
+  return registro;
+}
+
+// El agente aprobó (o edite: sacó algunas propiedades) desde la página de
+// revisión — recién acá se arma y manda el mensaje real al cliente.
+async function aprobarEnvioCliente(loc, agente, registro, indicesExcluidos) {
+  const excluidos = new Set((indicesExcluidos || []).map(Number));
+  const propiedadesFinales = registro.propiedades.filter((_, idx) => !excluidos.has(idx));
+  if (!propiedadesFinales.length) throw new Error('No queda ninguna propiedad seleccionada para mandar.');
+
+  const nombreAgente = (agente && agente.nombre) || 'tu agente inmobiliario';
+  const contactoAgente = (agente && agente.telefonoContacto) || '';
+  const lista = leerEnviosClientes(agente.id);
+  const idx = lista.findIndex((e) => e.id === registro.id);
+  if (idx !== -1) {
+    lista[idx].propiedades = propiedadesFinales;
+    lista[idx].estado = 'aprobado';
+    lista[idx].aprobadoEl = new Date().toISOString();
+    fs.writeFileSync(archivoEnviosClientes(agente.id), JSON.stringify(lista, null, 2));
+  }
+
+  const linkPresentacion = `${BASE_URL_APP}/p/${agente.id}/${registro.id}`;
+  const cantidad = propiedadesFinales.length;
+  const mensaje =
+    `Hola ${registro.cliente}! 👋 Soy ${nombreAgente}.\n\n` +
+    `Encontré ${cantidad === 1 ? 'una opción nueva' : `${cantidad} opciones nuevas`} en el mercado que podrían interesarte, según lo que estás buscando (${registro.tipo}, ${registro.zona}):\n\n` +
+    `${linkPresentacion}\n\n` +
+    `Escribime y te ayudo a coordinar la visita y la negociación.` +
+    (contactoAgente ? `\n${nombreAgente} — ${contactoAgente}` : '');
+
+  await enviarWhatsAppGHL(loc, registro.contactId, mensaje);
+  return { mensaje, cantidad };
+}
+
+function rechazarEnvioCliente(agenteId, registroId) {
+  const lista = leerEnviosClientes(agenteId);
+  const idx = lista.findIndex((e) => e.id === registroId);
+  if (idx === -1) return false;
+  lista[idx].estado = 'rechazado';
+  lista[idx].rechazadoEl = new Date().toISOString();
+  fs.writeFileSync(archivoEnviosClientes(agenteId), JSON.stringify(lista, null, 2));
+  return true;
+}
+
+// La página que ve el CLIENTE — solo lo que ya se le mandó (no vuelve a
+// buscar en vivo, así no cambia después de enviado). Marca del agente,
+// nunca datos del captador.
+// Página de revisión — la abre el AGENTE (Ingrid) desde el link que le
+// llega en el digest. Deschequeás lo que no sirva y aprobás; recién ahí sale
+// el WhatsApp real al cliente. Sin login (mismo criterio de link no
+// adivinable que la página del cliente) — pensada para abrirse desde el
+// celular en un toque.
+function paginaRevisionAgente(registro, agente) {
+  const nombreAgente = escapeHtml((agente && agente.nombre) || 'Agente');
+  if (registro.estado && registro.estado !== 'pendiente') {
+    return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Ya procesado</title><style>body{font-family:system-ui,sans-serif;background:#0f1720;color:#e8ecf1;text-align:center;padding:60px 20px}</style></head>
+    <body><h2>Este envío ya fue ${registro.estado === 'aprobado' ? 'aprobado y mandado' : 'rechazado'}.</h2></body></html>`;
+  }
+  const filas = (registro.propiedades || [])
+    .map(
+      (p, idx) => `
+      <label class="item">
+        <input type="checkbox" checked data-idx="${idx}">
+        <img src="${escapeHtml(p.imagen || '')}" alt="" onerror="this.style.display='none'">
+        <div class="detalle">
+          <strong>${escapeHtml(p.titulo)}</strong>
+          <span>US$ ${Number(p.precio || 0).toLocaleString('es-BO')} · ${escapeHtml(p.zona || '')} · ${escapeHtml(p.fuente || '')}</span>
+          <span class="captador">Captador: ${escapeHtml(p.captadorNombre || 'sin datos')}${p.captadorTelefono ? ' — ' + escapeHtml(p.captadorTelefono) : ''}</span>
+          ${p.link ? `<a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Ver aviso original ↗</a>` : ''}
+        </div>
+      </label>`
+    )
+    .join('');
+  return `<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Revisar antes de enviar — ${escapeHtml(registro.cliente || '')}</title>
+<style>
+  body{font-family:system-ui,-apple-system,sans-serif;background:#0f1720;color:#e8ecf1;margin:0;padding:0}
+  header{padding:20px;text-align:center;border-bottom:1px solid #1f2b38}
+  header h1{margin:0 0 4px;font-size:18px}
+  header p{margin:0;color:#8b9bab;font-size:13px}
+  main{max-width:600px;margin:0 auto;padding:16px}
+  .item{display:flex;gap:10px;background:#152230;border:1px solid #223244;border-radius:10px;padding:10px;margin-bottom:10px;align-items:flex-start;cursor:pointer}
+  .item input{margin-top:6px;width:18px;height:18px;flex:none}
+  .item img{width:64px;height:64px;object-fit:cover;border-radius:8px;flex:none;background:#0f1720}
+  .detalle{display:flex;flex-direction:column;gap:2px;font-size:13px}
+  .detalle strong{font-size:14px}
+  .detalle span{color:#8b9bab}
+  .captador{color:#e0a848 !important}
+  .detalle a{color:#2dd4bf;font-size:12px}
+  .botones{display:flex;gap:10px;margin-top:16px;position:sticky;bottom:0;background:#0f1720;padding:12px 0}
+  button{flex:1;padding:14px;border:none;border-radius:10px;font-weight:700;font-size:14px;cursor:pointer}
+  .aprobar{background:#2dd4bf;color:#0f1720}
+  .rechazar{background:#2a1a1a;color:#e8ecf1;border:1px solid #4a2a2a}
+  #estado{text-align:center;margin-top:12px;font-size:13px;color:#8b9bab}
+</style></head>
+<body>
+  <header><h1>Revisar antes de enviar</h1><p>${escapeHtml(registro.cliente || '')} — ${escapeHtml(registro.tipo || '')}, ${escapeHtml(registro.zona || '')}</p></header>
+  <main>
+    <p style="color:#8b9bab;font-size:13px">Desmarcá lo que no valga la pena mandar. Al aprobar, el cliente recibe SOLO lo que quede marcado.</p>
+    <div id="lista">${filas}</div>
+    <div class="botones">
+      <button class="rechazar" onclick="rechazar()">✕ No enviar nada</button>
+      <button class="aprobar" onclick="aprobar()">✓ Aprobar y enviar</button>
+    </div>
+    <p id="estado"></p>
+  </main>
+  <script>
+    const agenteId = ${JSON.stringify(registro.agenteId || '')};
+    const id = ${JSON.stringify(registro.id)};
+    function excluidos() {
+      return Array.from(document.querySelectorAll('#lista input[type=checkbox]'))
+        .filter(c => !c.checked).map(c => c.dataset.idx);
+    }
+    async function aprobar() {
+      document.getElementById('estado').textContent = 'Enviando...';
+      const res = await fetch('/api/envios-clientes/' + agenteId + '/' + id + '/aprobar', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ excluidos: excluidos() })
+      });
+      const data = await res.json();
+      document.getElementById('estado').textContent = res.ok ? '✓ Enviado al cliente.' : ('Error: ' + (data.error || 'no se pudo'));
+    }
+    async function rechazar() {
+      document.getElementById('estado').textContent = 'Rechazando...';
+      const res = await fetch('/api/envios-clientes/' + agenteId + '/' + id + '/rechazar', { method: 'POST' });
+      document.getElementById('estado').textContent = res.ok ? 'Rechazado, no se manda nada.' : 'Error al rechazar.';
+    }
+  </script>
+</body></html>`;
+}
+
+function paginaPresentacionCliente(envio, agente) {
+  const nombreAgente = escapeHtml((agente && agente.nombre) || 'Tu agente inmobiliario');
+  const inmobiliaria = escapeHtml((agente && agente.inmobiliaria) || '');
+  const contactoAgente = (agente && agente.telefonoContacto) || '';
+  const waHref = contactoAgente ? `https://wa.me/${contactoAgente.replace(/[^\d]/g, '')}` : '';
+  const tarjetas = (envio.propiedades || [])
+    .map((p, idx) => {
+      const fotos = Array.isArray(p.imagenes) && p.imagenes.length ? p.imagenes : p.imagen ? [p.imagen] : [];
+      const galeria = fotos.length
+        ? `<div class="galeria" data-card="${idx}">
+            <img class="principal" src="${escapeHtml(fotos[0])}" alt="" loading="lazy">
+            ${
+              fotos.length > 1
+                ? `<div class="miniaturas">${fotos
+                    .map((f) => `<img src="${escapeHtml(f)}" alt="" loading="lazy" onclick="this.closest('.galeria').querySelector('.principal').src=this.src">`)
+                    .join('')}</div>`
+                : ''
+            }
+          </div>`
+        : '<div class="sin-foto">Sin foto</div>';
+      const caracteristicas = [
+        p.dormitorios ? `${p.dormitorios} dorm.` : '',
+        p.banos ? `${p.banos} baños` : '',
+        p.m2Terreno ? `${p.m2Terreno} m² terreno` : '',
+        p.m2Construccion ? `${p.m2Construccion} m² construidos` : '',
+      ]
+        .filter(Boolean)
+        .join(' · ');
+      const TOPE_DESC = 280;
+      const descCorta = p.descripcion && p.descripcion !== p.titulo ? p.descripcion.slice(0, TOPE_DESC) : '';
+      // Botón propio por propiedad — José Luis lo pidió el 2026-08-05: que
+      // cada tarjeta tenga su "Agendar visita" con un WhatsApp pre-armado
+      // mencionando ESA propiedad puntual, en vez de un solo botón genérico
+      // al final de la página.
+      const textoWa = encodeURIComponent(`Hola ${nombreAgente}! Me interesa esta propiedad: "${p.titulo}" (US$ ${Number(p.precio || 0).toLocaleString('es-BO')}). Quiero agendar una visita.`);
+      const botonCard = waHref ? `<a class="cta-card" href="${waHref}?text=${textoWa}">Agendar visita 📅</a>` : '';
+      return `
+      <div class="card">
+        ${galeria}
+        <div class="info">
+          <h3>${escapeHtml(p.titulo)}</h3>
+          <p class="precio">US$ ${Number(p.precio || 0).toLocaleString('es-BO')}</p>
+          ${p.zona ? `<p class="zona">${escapeHtml(p.zona)}</p>` : ''}
+          ${caracteristicas ? `<p class="caracteristicas">${escapeHtml(caracteristicas)}</p>` : ''}
+          ${descCorta ? `<p class="descripcion">${escapeHtml(descCorta)}${p.descripcion.length > TOPE_DESC ? '…' : ''}</p>` : ''}
+          ${botonCard}
+        </div>
+      </div>`;
+    })
+    .join('');
+  return `<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Opciones para ${escapeHtml(envio.cliente || '')} — ${nombreAgente}</title>
+<style>
+  body{font-family:system-ui,-apple-system,sans-serif;background:#0f1720;color:#e8ecf1;margin:0;padding:0}
+  header{padding:24px 20px;text-align:center;border-bottom:1px solid #1f2b38}
+  header h1{margin:0 0 4px;font-size:20px}
+  header p{margin:0;color:#8b9bab;font-size:14px}
+  main{max-width:960px;margin:0 auto;padding:24px 16px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;margin:20px 0}
+  .card{background:#152230;border-radius:12px;overflow:hidden;border:1px solid #223244}
+  .galeria .principal{width:100%;height:170px;object-fit:cover;display:block;background:#0f1720}
+  .miniaturas{display:flex;gap:4px;padding:4px;overflow-x:auto}
+  .miniaturas img{width:48px;height:48px;object-fit:cover;border-radius:6px;cursor:pointer;flex:none;opacity:.75}
+  .miniaturas img:hover{opacity:1}
+  .sin-foto{width:100%;height:170px;background:#1c2b3a;display:flex;align-items:center;justify-content:center;color:#5c6b7a;font-size:13px}
+  .info{padding:12px}
+  .info h3{margin:0 0 6px;font-size:15px;line-height:1.3}
+  .precio{margin:0 0 4px;color:#2dd4bf;font-weight:700;font-size:16px}
+  .zona{margin:0 0 4px;color:#8b9bab;font-size:13px}
+  .caracteristicas{margin:0 0 6px;color:#c3ccd6;font-size:13px}
+  .descripcion{margin:0;color:#8b9bab;font-size:12px;line-height:1.4}
+  .cta{display:block;text-align:center;background:#2dd4bf;color:#0f1720;text-decoration:none;font-weight:700;padding:14px;border-radius:10px;margin-top:8px}
+  .cta-card{display:block;text-align:center;background:#1f3d3a;color:#2dd4bf;text-decoration:none;font-weight:600;padding:10px;border-radius:8px;margin-top:10px;font-size:13px}
+  .cta-card:hover{background:#2dd4bf;color:#0f1720}
+  footer{text-align:center;color:#5c6b7a;font-size:12px;padding:24px}
+</style></head>
+<body>
+  <header><h1>${nombreAgente}${inmobiliaria ? ' — ' + inmobiliaria : ''}</h1><p>Opciones para ${escapeHtml(envio.cliente || 'vos')}</p></header>
+  <main>
+    <div class="grid">${tarjetas || '<p>No hay propiedades para mostrar.</p>'}</div>
+    ${waHref ? `<a class="cta" href="${waHref}">Escribile a ${nombreAgente} por WhatsApp</a>` : ''}
+  </main>
+  <footer>Buscador de Inmuebles — Sofymar IA</footer>
+</body></html>`;
 }
 
 let sincronizandoRequerimientosGHL = false;
@@ -1565,6 +2047,7 @@ async function sincronizarRequerimientosGHL() {
               creado: existente ? existente.creado : new Date().toISOString(),
               enviados: existente ? existente.enviados || [] : [],
               comentarios: existente ? existente.comentarios || [] : [],
+              notificados: existente ? existente.notificados || [] : [],
               origen: 'ghl',
               contactId: c.id,
               locationId: loc.locationId,
@@ -1589,6 +2072,171 @@ async function sincronizarRequerimientosGHL() {
     estado.enProgreso = false;
     guardarEstadoGHL(estado);
     sincronizandoRequerimientosGHL = false;
+  }
+}
+
+let barriendoMatchesRequerimientos = false;
+
+// Corre el barrido para UN solo agente (extraído aparte para poder
+// reusarlo tanto en el barrido automático de todos los agentes como en el
+// endpoint de admin que lo dispara a mano, ej. para una demo o para probar
+// que un requerimiento puntual funciona sin esperar hasta 12h).
+// Nunca notifica a otro agente ni a José Luis — solo al dueño del
+// requerimiento, vía `agente.telefonoNotificaciones`.
+async function barridoMatchesParaAgente(loc, agente, { forzar, soloRequerimientoId } = {}) {
+  const resumen = { agenteId: loc.agenteId, requerimientosRevisados: 0, requerimientosIncompletos: 0, matchesNuevos: 0, emailsEnviados: 0, whatsappEnviados: 0, pendientesDeRevision: 0, clientesConError: 0, errores: [], detalle: [] };
+  const telefono = agente && agente.telefonoNotificaciones;
+  const correo = agente && agente.correoNotificaciones;
+  // Se resuelve UNA sola vez por agente (no por requerimiento) para no
+  // hacer un upsert de más por cada match — el destino de notificación es
+  // siempre el mismo contacto durante todo este barrido.
+  let contactId = null;
+  if (telefono || correo) {
+    try {
+      contactId = await upsertContactoNotificacionesGHL(loc, { telefono, correo });
+    } catch (e) {
+      resumen.errores.push(`No se pudo resolver el contacto de notificaciones: ${e.message}`);
+    }
+  }
+  // `soloRequerimientoId` (solo vía admin) acota la corrida a un único
+  // requerimiento — para probar en vivo sin arriesgarse a mandarle mensajes
+  // de prueba a leads reales que no lo esperan. OJO: la lista completa se
+  // sigue leyendo y guardando entera (guardarRequerimientos más abajo) —
+  // filtrar la lista misma acá borraría a todos los demás al guardar.
+  const lista = leerRequerimientos(loc.agenteId);
+  let cambios = false;
+  // Se junta TODO acá y se manda UN solo correo/WhatsApp al final del
+  // barrido (no uno por requerimiento) — antes cada requerimiento con match
+  // mandaba su propio mensaje, y una corrida con varios requerimientos
+  // activos terminaba mandando una ráfaga de correos casi simultáneos al
+  // mismo destinatario, la señal más típica de spam para Gmail/Outlook.
+  const pendientesRevision = [];
+  for (const r of lista) {
+    if (soloRequerimientoId && r.id !== soloRequerimientoId) continue;
+    if (!r.zona || !r.tipo) {
+      resumen.requerimientosIncompletos++;
+      continue; // requerimiento incompleto (típico de texto libre de GHL a medio llenar) — nada confiable que buscar todavía
+    }
+    resumen.requerimientosRevisados++;
+    let resultado;
+    try {
+      resultado = await buscarTodo(r);
+    } catch (e) {
+      resumen.errores.push(`${r.cliente}: ${e.message}`);
+      await new Promise((res) => setTimeout(res, 3000));
+      continue;
+    }
+    const notificados = new Set(r.notificados || []);
+    // `forzar` (solo vía admin, para demo/prueba puntual) ignora el dedup y
+    // trata todos los matches como nuevos — el barrido automático nunca lo usa.
+    const nuevos = forzar ? resultado.listados : resultado.listados.filter((it) => !notificados.has(it.link || `${it.fuente}|${it.titulo}|${it.precio}`));
+    if (nuevos.length) {
+      for (const it of nuevos) notificados.add(it.link || `${it.fuente}|${it.titulo}|${it.precio}`);
+      r.notificados = Array.from(notificados).slice(-500); // tope para que no crezca sin límite en requerimientos muy viejos
+      cambios = true;
+      resumen.matchesNuevos += nuevos.length;
+      resumen.detalle.push({ cliente: r.cliente, zona: r.zona, tipo: r.tipo, matches: nuevos.map((it) => ({ titulo: it.titulo, precio: it.precio, fuente: it.fuente })) });
+      for (const it of nuevos) {
+        guardarAlerta(loc.agenteId, {
+          origen: 'barrido-periodico',
+          propiedad: { titulo: it.titulo, precio: it.precio, zona: it.zona, tipo: it.tipo, operacion: it.operacion, link: it.link || '' },
+          requerimiento: { id: r.id, cliente: r.cliente, telefono: r.telefono, zona: r.zona, precioMin: r.precioMin, precioMax: r.precioMax },
+        });
+      }
+      // Ya NO se manda directo al cliente — pedido explícito de José Luis
+      // (2026-08-05): "la IA puede fallar", así que se arma la propuesta en
+      // estado pendiente y el agente la aprueba desde la página de revisión
+      // que le llega en el digest de abajo. Recién ahí sale el WhatsApp real.
+      if (r.telefono || r.contactId) {
+        try {
+          const registroPendiente = await prepararRevisionCliente(loc, agente, r, nuevos);
+          resumen.pendientesDeRevision++;
+          pendientesRevision.push({ requerimiento: r, registro: registroPendiente });
+        } catch (e) {
+          resumen.clientesConError++;
+          resumen.errores.push(`Cliente ${r.cliente}: ${e.message}`);
+        }
+      }
+    }
+    // Pausa entre requerimientos para no golpear C21/RE-MAX/BienInmuebles en ráfaga (ya nos bloquearon una vez por esto).
+    await new Promise((res) => setTimeout(res, 3000));
+  }
+  if (cambios) guardarRequerimientos(lista, loc.agenteId);
+
+  // Ya no se manda el listado de propiedades en el digest — cada
+  // requerimiento con matches queda `pendiente` y lo que se manda acá es el
+  // link para REVISAR Y APROBAR antes de que salga algo al cliente (pedido
+  // de José Luis, 2026-08-05: "la IA puede fallar").
+  if (pendientesRevision.length && contactId) {
+    const TOPE_REQUERIMIENTOS = 8;
+    const seccionesTxt = [];
+    const seccionesHtml = [];
+    for (const { requerimiento: r, registro } of pendientesRevision.slice(0, TOPE_REQUERIMIENTOS)) {
+      const linkRevision = `${BASE_URL_APP}/revisar/${agente.id}/${registro.id}`;
+      const cantidad = registro.propiedades.length;
+      seccionesTxt.push(`${r.cliente} (${r.zona}, ${r.tipo}) — ${cantidad} opción(es) para revisar:\n${linkRevision}`);
+      seccionesHtml.push(
+        `<p style="margin:0 0 4px"><strong>${escapeHtml(r.cliente)}</strong> — ${escapeHtml(r.zona)}, ${escapeHtml(r.tipo)} — ${cantidad} opción(es)</p>` +
+          `<p style="margin:0 0 16px"><a href="${linkRevision}">Revisar y aprobar →</a></p>`
+      );
+    }
+    const restantes = pendientesRevision.length - Math.min(pendientesRevision.length, TOPE_REQUERIMIENTOS);
+    const pieTxt = (restantes > 0 ? `\n…y ${restantes} requerimiento(s) más con novedades — entrá al Buscador de Inmuebles.\n\n` : '\n') + 'Buscador de Inmuebles — Sofymar IA';
+    const pieHtml =
+      (restantes > 0 ? `<p>…y ${restantes} requerimiento(s) más con novedades — entrá al Buscador de Inmuebles.</p>` : '') +
+      `<p style="color:#888;font-size:12px">Buscador de Inmuebles — Sofymar IA</p>`;
+    const asunto =
+      pendientesRevision.length === 1
+        ? `Revisar antes de enviar — ${pendientesRevision[0].requerimiento.cliente}`
+        : `Revisar antes de enviar — ${pendientesRevision.length} clientes`;
+    const mensajeTxt = seccionesTxt.join('\n\n') + pieTxt;
+    const mensajeHtml = seccionesHtml.join('') + pieHtml;
+    if (correo) {
+      try {
+        await enviarEmailGHL(loc, contactId, correo, asunto, mensajeHtml, true);
+        resumen.emailsEnviados++;
+      } catch (e) {
+        resumen.errores.push(`Email a ${loc.agenteId}: ${e.message}`);
+      }
+    }
+    if (telefono) {
+      try {
+        await enviarWhatsAppGHL(loc, contactId, `🔎 ${asunto}:\n\n${mensajeTxt}`);
+        resumen.whatsappEnviados++;
+      } catch (e) {
+        // No se cuenta como error "real" del sistema — es esperable que falle por la ventana de 24h de WhatsApp.
+        resumen.whatsappFallos = (resumen.whatsappFallos || 0) + 1;
+      }
+    }
+  }
+  return resumen;
+}
+
+// A diferencia de matchearContraTodosLosAgentes (que solo reacciona cuando
+// aparece una propiedad genuinamente NUEVA en el caché de Mobiliario App),
+// este barrido vuelve a buscar activamente en las 4 fuentes para CADA
+// requerimiento activo — así un requerimiento nuevo también se cruza contra
+// el inventario que YA existía en C21/RE-MAX/BienInmuebles (fuentes en vivo,
+// sin caché histórica propia). Corre cada 12h (ver setInterval en el arranque).
+async function barridoMatchesRequerimientos() {
+  if (barriendoMatchesRequerimientos) return;
+  barriendoMatchesRequerimientos = true;
+  try {
+    const locations = leerLocationsGHL();
+    const agentes = leerAgentes();
+    for (const loc of locations) {
+      if (!loc.agenteId || !loc.locationId || !loc.token) continue;
+      const agente = agentes.find((a) => a.id === loc.agenteId);
+      try {
+        await barridoMatchesParaAgente(loc, agente);
+      } catch (e) {
+        console.error('Barrido de matches: error con', loc.agenteId, '—', e.message);
+      }
+    }
+  } catch (e) {
+    console.error('Error en barrido de matches de requerimientos:', e.message);
+  } finally {
+    barriendoMatchesRequerimientos = false;
   }
 }
 
@@ -2492,6 +3140,64 @@ function camposRequerimiento(body) {
 async function manejarRequest(req, res) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
+  // Página pública de presentación de propiedades — la abre el CLIENTE
+  // desde el link que le llega por WhatsApp, sin ninguna clave. Va antes de
+  // cualquier autenticación a propósito. Muestra la marca/contacto del
+  // agente, nunca del captador original (ver prepararRevisionCliente/aprobarEnvioCliente).
+  const mPresentacion = url.pathname.match(/^\/p\/([^/]+)\/([^/]+)$/);
+  if (mPresentacion && req.method === 'GET') {
+    const [, agenteIdP, envioId] = mPresentacion;
+    const envio = envioPorId(agenteIdP, envioId);
+    const agenteP = leerAgentes().find((a) => a.id === agenteIdP);
+    if (!envio || !agenteP) {
+      res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end('<h1>No encontrado</h1>');
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    return res.end(paginaPresentacionCliente(envio, agenteP));
+  }
+
+  // Página de revisión del AGENTE — mismo criterio de link no adivinable,
+  // sin login, para poder abrirla en un toque desde el WhatsApp/correo.
+  const mRevision = url.pathname.match(/^\/revisar\/([^/]+)\/([^/]+)$/);
+  if (mRevision && req.method === 'GET') {
+    const [, agenteIdR, envioId] = mRevision;
+    const envio = envioPorId(agenteIdR, envioId);
+    const agenteR = leerAgentes().find((a) => a.id === agenteIdR);
+    if (!envio || !agenteR) {
+      res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end('<h1>No encontrado</h1>');
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    return res.end(paginaRevisionAgente(envio, agenteR));
+  }
+
+  // Acciones de aprobar/rechazar (llamadas por el JS de la página de
+  // revisión) — también sin auth de apiKey, protegidas solo por el id no
+  // adivinable, mismo criterio que las dos rutas de arriba.
+  const mAprobar = url.pathname.match(/^\/api\/envios-clientes\/([^/]+)\/([^/]+)\/aprobar$/);
+  if (mAprobar && req.method === 'POST') {
+    const [, agenteIdA, envioId] = mAprobar;
+    const registro = envioPorId(agenteIdA, envioId);
+    const agenteA = leerAgentes().find((a) => a.id === agenteIdA);
+    const loc = leerLocationsGHL().find((l) => l.agenteId === agenteIdA);
+    if (!registro || !agenteA || !loc) return json(res, 404, { error: 'No encontrado.' });
+    if (registro.estado && registro.estado !== 'pendiente') return json(res, 409, { error: 'Este envío ya fue procesado.' });
+    try {
+      const body = await leerBody(req);
+      const resultado = await aprobarEnvioCliente(loc, agenteA, registro, body.excluidos || []);
+      return json(res, 200, { ok: true, ...resultado });
+    } catch (e) {
+      return json(res, 500, { error: e.message });
+    }
+  }
+  const mRechazar = url.pathname.match(/^\/api\/envios-clientes\/([^/]+)\/([^/]+)\/rechazar$/);
+  if (mRechazar && req.method === 'POST') {
+    const [, agenteIdX, envioId] = mRechazar;
+    const ok = rechazarEnvioCliente(agenteIdX, envioId);
+    return json(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'No existe ese envío.' });
+  }
+
   const requiereAuth = modoMultiagente();
   const agente = autenticar(req);
 
@@ -2507,6 +3213,8 @@ async function manejarRequest(req, res) {
             nombre: agente.nombre,
             trial: estadoTrial(agente),
             telefonoContacto: agente.telefonoContacto || '',
+            telefonoNotificaciones: agente.telefonoNotificaciones || '',
+            correoNotificaciones: agente.correoNotificaciones || '',
             driveRaizUrl: agente.driveRaizUrl || '',
             inmobiliaria: agente.inmobiliaria || '',
             oficina: agente.oficina || '',
@@ -2591,6 +3299,26 @@ async function manejarRequest(req, res) {
       return json(res, 200, { ok: true, email: lista[idx].email || null });
     }
 
+    // Dispara el barrido de matches para UN agente ahora mismo, sin esperar
+    // al ciclo automático de 12h — para demos, o para probar en vivo que un
+    // requerimiento puntual encuentra opciones y manda el WhatsApp real.
+    const mBarrido = url.pathname.match(/^\/api\/admin\/agentes\/([^/]+)\/barrido$/);
+    if (mBarrido && req.method === 'POST') {
+      const [, id] = mBarrido;
+      const loc = leerLocationsGHL().find((l) => l.agenteId === id);
+      if (!loc) return json(res, 404, { error: 'Ese agente no tiene GHL conectado (o no tiene requerimientoFieldId configurado).' });
+      const agente = leerAgentes().find((a) => a.id === id);
+      if (!agente) return json(res, 404, { error: 'No existe ese agente.' });
+      try {
+        const forzar = url.searchParams.get('forzar') === '1';
+        const soloRequerimientoId = url.searchParams.get('requerimientoId') || undefined;
+        const resumen = await barridoMatchesParaAgente(loc, agente, { forzar, soloRequerimientoId });
+        return json(res, 200, resumen);
+      } catch (e) {
+        return json(res, 500, { error: 'Error corriendo el barrido: ' + e.message });
+      }
+    }
+
     if (url.pathname === '/api/admin/agentes' && req.method === 'GET') {
       const agentesConDatos = leerAgentes().map((a) => ({
         id: a.id,
@@ -2600,6 +3328,8 @@ async function manejarRequest(req, res) {
         creado: a.creado,
         activo: a.activo !== false,
         cantidadRequerimientos: leerRequerimientos(a.id).length,
+        telefonoNotificaciones: a.telefonoNotificaciones || '',
+        correoNotificaciones: a.correoNotificaciones || '',
         // No se manda el token acá (aunque este panel ya está protegido por
         // ADMIN_KEY) — con saber que está conectado alcanza para la tabla.
         ghlConectado: !!(a.ghlConfig && a.ghlConfig.locationId),
@@ -3030,6 +3760,8 @@ async function manejarRequest(req, res) {
     if (idx === -1) return json(res, 404, { error: 'No existe el agente.' });
     const actualizado = { ...lista[idx] };
     if (body.telefonoContacto !== undefined) actualizado.telefonoContacto = String(body.telefonoContacto).trim();
+    if (body.telefonoNotificaciones !== undefined) actualizado.telefonoNotificaciones = String(body.telefonoNotificaciones).trim();
+    if (body.correoNotificaciones !== undefined) actualizado.correoNotificaciones = String(body.correoNotificaciones).trim();
     if (body.driveRaizUrl !== undefined) actualizado.driveRaizUrl = String(body.driveRaizUrl).trim();
     if (body.inmobiliaria !== undefined) actualizado.inmobiliaria = String(body.inmobiliaria).trim();
     if (body.oficina !== undefined) actualizado.oficina = String(body.oficina).trim();
@@ -3047,6 +3779,8 @@ async function manejarRequest(req, res) {
     return json(res, 200, {
       ok: true,
       telefonoContacto: actualizado.telefonoContacto || '',
+      telefonoNotificaciones: actualizado.telefonoNotificaciones || '',
+      correoNotificaciones: actualizado.correoNotificaciones || '',
       driveRaizUrl: actualizado.driveRaizUrl || '',
       inmobiliaria: actualizado.inmobiliaria || '',
       oficina: actualizado.oficina || '',
@@ -3309,6 +4043,16 @@ async function manejarRequest(req, res) {
   if (url.pathname === '/api/alertas' && req.method === 'GET') {
     return json(res, 200, leerAlertas(agenteId));
   }
+  // Registro de qué se le mandó directo a cada cliente (auditoría, solo lectura).
+  if (url.pathname === '/api/envios-clientes' && req.method === 'GET') {
+    return json(res, 200, leerEnviosClientes(agenteId));
+  }
+  // Registro de captadores (agentes de otras fuentes que capturaron una
+  // propiedad que le mandamos a algún cliente) — deduplicado, con todas sus
+  // propiedades juntas, para que el agente pueda ubicarlos y gestionar.
+  if (url.pathname === '/api/captadores' && req.method === 'GET') {
+    return json(res, 200, leerCaptadores(agenteId));
+  }
   if (url.pathname.startsWith('/api/alertas/') && url.pathname.endsWith('/leida') && req.method === 'POST') {
     const id = url.pathname.split('/')[3];
     const ok = marcarAlertaLeida(agenteId, id);
@@ -3522,6 +4266,16 @@ server.listen(PORT, () => {
   // GHL_LOCATIONS no está configurado (ver leerLocationsGHL).
   chequearResyncRequerimientosGHL();
   setInterval(chequearResyncRequerimientosGHL, 60 * 60 * 1000);
+
+  // Barrido activo de matches (busca en las 4 fuentes para cada requerimiento,
+  // no solo espera a que aparezca algo nuevo) — 2 veces al día. Primera
+  // corrida a los 10 minutos de arrancar (no al toque, para no competir con
+  // la sincronización inicial de Mobiliario App/GHL).
+  setTimeout(
+    () => barridoMatchesRequerimientos().catch((e) => console.error('Error en primer barrido de matches:', e.message)),
+    10 * 60 * 1000
+  );
+  setInterval(() => barridoMatchesRequerimientos().catch((e) => console.error('Error en barrido de matches:', e.message)), 12 * 60 * 60 * 1000);
 
   // Reconfirmar disponibilidad del inventario — no necesita frecuencia de
   // hora en hora, se revisa una vez por día.
