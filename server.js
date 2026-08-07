@@ -1099,6 +1099,19 @@ const RMX_CITY_SC = 4; // Santa Cruz de la Sierra
 // avisos) cuando "casa" real ronda 700+ — mismo bug que C21, corregido junto.
 const RMX_PAGINAS_MAX = 40; // 20 avisos/página → techo de 800 avisos, sobre el máximo real visto (730)
 
+// BUG REAL encontrado 2026-08-07 (reportado por José Luis: "busqué casa en
+// venta y salieron casas en alquiler"): esta función pegaba siempre a
+// /api/search (sin ningún filtro de operación) y confiaba en que
+// subtype_property_ids alcanzara — pero /api/search sin más devuelve TODOS
+// los transaction_type_id mezclados (venta=1, alquiler=2, anticrético=3).
+// El filtro de operación de RE/MAX no es un query param, es un SEGMENTO de
+// la URL (/api/search/venta o /api/search/alquiler) — confirmado inspeccionando
+// las llamadas reales que hace remax.bo al usar sus propios botones "Quiero
+// Comprar"/"Quiero Alquilar". Ninguna otra parte del pipeline (normalizarRemax,
+// matcheaPropiedad) volvía a chequear la operación del aviso, así que esta
+// mezcla pasaba directo al agente sin ningún filtro de respaldo.
+const RMX_OPERACION_SEGMENTO = { venta: 'venta', alquiler: 'alquiler' };
+
 function urlRemax(req, pagina, minUsd, maxUsd) {
   const p = new URLSearchParams();
   p.set('city_id', String(RMX_CITY_SC));
@@ -1106,7 +1119,8 @@ function urlRemax(req, pagina, minUsd, maxUsd) {
   if (minUsd) p.set('min_price', String(minUsd));
   if (maxUsd) p.set('max_price', String(maxUsd));
   p.set('page', String(pagina));
-  return 'https://remax.bo/api/search?' + p.toString();
+  const segmento = RMX_OPERACION_SEGMENTO[req.operacion] || RMX_OPERACION_SEGMENTO.venta;
+  return `https://remax.bo/api/search/${segmento}?` + p.toString();
 }
 
 function normalizarRemax(r) {
