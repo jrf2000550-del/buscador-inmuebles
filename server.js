@@ -1010,6 +1010,14 @@ function normalizarC21(r, operacion) {
   // enInternet=true (es el mismo feed que usa la búsqueda pública del sitio),
   // pero se chequea igual por si el propio C21 alguna vez expone algo dado de baja.
   if (r.enInternet === false) return null;
+  // Chequeo de respaldo (encontrado el 2026-08-07 al descubrir el bug real
+  // de RE/MAX): el filtro de operación se pide por URL y hasta ahora se
+  // confiaba ciegamente en que el portal lo respetara — acá C21 SÍ lo
+  // respeta (verificado en vivo, "en venta"/"en renta" 100% consistentes),
+  // pero este chequeo queda como red de seguridad para el futuro, no
+  // porque haya un bug conocido hoy en C21 puntualmente.
+  const operacionTxtEsperado = operacion === 'alquiler' ? 'en renta' : 'en venta';
+  if (r.tipoOperacionTxt && r.tipoOperacionTxt !== operacionTxtEsperado) return null;
   const fotos = r.fotos && r.fotos.propiedadThumbnail;
   const usd = r.precios?.vista?.precio;
   let precio = usd ? Math.round(usd) : null;
@@ -1216,7 +1224,14 @@ async function fetchJsonPost(url, params) {
   return res.json();
 }
 
-function normalizarBienInmuebles(r, tc, tipo) {
+function normalizarBienInmuebles(r, tc, tipo, operacion) {
+  // Red de seguridad agregada el 2026-08-07 (mismo criterio que C21) tras
+  // encontrar que RE/MAX mezclaba venta/alquiler en silencio — acá el
+  // parámetro `modalidad` que ya se manda en el POST sí viene respetado
+  // (verificado en vivo, modalidad=1/2 100% consistentes con lo pedido),
+  // pero se chequea igual como respaldo ante un cambio futuro del portal.
+  const modalidadEsperada = operacion === 'alquiler' ? '2' : '1';
+  if (r.modalidad_cata != null && String(r.modalidad_cata) !== modalidadEsperada) return null;
   const enBs = String(r.moneda_cata) === '1';
   const crudo = Number(String(r.precio_cata || '').replace(/[^\d.]/g, ''));
   let precio = crudo ? Math.round(enBs ? crudo / tc : crudo) : null;
@@ -1289,7 +1304,7 @@ async function fetchBienInmuebles(req, tc) {
       if (p === 1) throw new Error((d && d.message) || 'Respuesta inesperada de BienInmuebles');
       break; // páginas siguientes: si fallan, nos quedamos con lo ya traído
     }
-    items.push(...d.map((r) => normalizarBienInmuebles(r, tc, req.tipo)));
+    items.push(...d.map((r) => normalizarBienInmuebles(r, tc, req.tipo, req.operacion)));
     if (d.length < BIEN_FILAS) break; // página incompleta = era la última
   }
   return items;
