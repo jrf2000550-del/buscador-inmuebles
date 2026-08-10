@@ -2366,6 +2366,13 @@ function matcheaPropiedad(item, req) {
 
 // ---------- Búsqueda combinada ----------
 
+// Caché en memoria (se pierde si el proceso reinicia, no hace falta que
+// sea más persistente que eso) del resultado crudo por tipo+operación,
+// compartida entre todos los agentes. Ver el porqué junto a donde se usa,
+// más abajo en buscarTodo.
+const CACHE_BUSQUEDA_TTL_MS = 5 * 60 * 1000; // 5 minutos
+const cacheBusquedaCruda = new Map();
+
 async function buscarTodo(req) {
   const zonas = parseZonas(req.zona);
   const { precioMinUsd, precioMaxUsd, tc, moneda } = convertirPresupuesto(req);
@@ -2380,15 +2387,10 @@ async function buscarTodo(req) {
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
 
-  // Tolerancia de precio: un aviso apenas fuera del presupuesto (ej. 8% más
-  // caro) sigue siendo útil para el agente — se incluye pero marcado como
-  // "cerca del presupuesto" en vez de perderse por un corte 100% duro.
+  // matcheaPropiedad recalcula esto mismo por su cuenta para el filtrado
+  // real — acá solo hace falta el número para informarlo en el objeto de
+  // retorno (ver más abajo), ya no para pedirle un rango a RE/MAX.
   const MARGEN_PRECIO = 0.12;
-  const precioMinConMargen = precioMinUsd ? Math.round(precioMinUsd * (1 - MARGEN_PRECIO)) : null;
-  const precioMaxConMargen = precioMaxUsd ? Math.round(precioMaxUsd * (1 + MARGEN_PRECIO)) : null;
-  // Recalculado acá (además de adentro de matcheaPropiedad) solo para el
-  // objeto de retorno que usa la UI — el filtrado real ya lo aplica
-  // matcheaPropiedad por su cuenta con este mismo criterio.
   const antiguedadMaxDias = req.antiguedadMaxDias ? Number(req.antiguedadMaxDias) : null;
 
   // Antes un fallo de cualquier fuente (ej. un bloqueo anti-bot) se tragaba
@@ -2409,16 +2411,45 @@ async function buscarTodo(req) {
     }
   }
 
-  const [c21, remax, bien, mobiliario] = await Promise.all([
-    fetchConEstado('Century 21', fetchC21(req)),
-    // Se le pide a RE/MAX el rango con margen (su filtro corre en su propio
-    // servidor); el recorte fino con margen real se hace acá abajo.
-    fetchConEstado('RE/MAX', fetchRemax(req, precioMinConMargen, precioMaxConMargen)),
-    fetchConEstado('BienInmuebles', fetchBienInmuebles(req, tc)),
-    fetchConEstado('Mobiliario App', fetchMobiliario(req, tc)),
-  ]);
+  // Caché en memoria del RESULTADO CRUDO (sin filtrar por zona/precio/etc,
+  // eso se hace siempre fresco más abajo con matcheaPropiedad) por
+  // tipo+operación — compartida entre TODOS los agentes, no por sesión.
+  // Agregada 2026-08-10 porque una búsqueda en una categoría grande (ej.
+  // terreno, 1200+ avisos de C21) tardaba hasta 90s pegándole a los 4
+  // portales desde cero cada vez, aunque dos agentes buscaran casi lo mismo
+  // con solo la zona o el presupuesto distintos. RE/MAX dejó de pedir el
+  // rango de precio en el request (antes lo hacía para traer menos avisos)
+  // así el crudo cacheado sirve para cualquier presupuesto, no solo el de
+  // la primera búsqueda que lo generó — el recorte por precio lo sigue
+  // haciendo matcheaPropiedad, igual que con las otras 3 fuentes.
+  const claveCacheBusqueda = `${req.tipo}|${req.operacion}`;
+  const cacheado = cacheBusquedaCruda.get(claveCacheBusqueda);
+  let c21, remax, bien, mobiliario;
+  if (cacheado && Date.now() - cacheado.timestamp < CACHE_BUSQUEDA_TTL_MS) {
+    ({ c21, remax, bien, mobiliario } = cacheado);
+    Object.assign(estadoFuentes, cacheado.estadoFuentes);
+  } else {
+    [c21, remax, bien, mobiliario] = await Promise.all([
+      fetchConEstado('Century 21', fetchC21(req)),
+      fetchConEstado('RE/MAX', fetchRemax(req)),
+      fetchConEstado('BienInmuebles', fetchBienInmuebles(req, tc)),
+      fetchConEstado('Mobiliario App', fetchMobiliario(req, tc)),
+    ]);
+    // Solo se cachea si las 4 fuentes respondieron bien — un resultado
+    // parcial por un fallo puntual de un portal no debe quedar pegado 5
+    // minutos para todos los demás agentes que busquen lo mismo.
+    if (Object.values(estadoFuentes).every((e) => e.ok)) {
+      cacheBusquedaCruda.set(claveCacheBusqueda, { timestamp: Date.now(), c21, remax, bien, mobiliario, estadoFuentes: { ...estadoFuentes } });
+    }
+  }
 
-  let items = [...c21, ...remax, ...bien, ...mobiliario];
+  // Clonado (no solo el array, cada item) porque más abajo se mutan campos
+  // por request (avisoPrecio, nivel, cercaPresupuesto, destaca) — si el
+  // crudo viene del caché, esos objetos son compartidos entre CUALQUIER
+  // búsqueda que caiga en la misma clave (mismo tipo+operación) durante los
+  // 5 minutos de vigencia; sin clonar, dos agentes buscando con distinto
+  // precio/zona se pisarían esos campos entre sí.
+  let items = [...c21, ...remax, ...bien, ...mobiliario].map((i) => ({ ...i }));
 
   // Aviso de precio inconsistente: cuando el título/descripción del propio
   // aviso menciona un precio bien distinto al campo estructurado del portal
