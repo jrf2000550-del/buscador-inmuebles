@@ -1310,100 +1310,6 @@ async function fetchBienInmuebles(req, tc) {
   return items;
 }
 
-// ---------- Santa Cruz Bienes Raíces (santacruzbienesraices.com) ----------
-// WordPress con el tema "RealHomes" — expone el API REST estándar de
-// WordPress (wp-json/wp/v2), público por diseño (robots.txt sin
-// restricciones, sitemap.xml activo, verificado 2026-08-05). El custom
-// post type "propiedad" (rest_base real, no "property") trae todos los
-// datos estructurados — precio, m² construidos, m² de terreno,
-// dormitorios, baños, coordenadas, hasta 5+ fotos — en el campo
-// `property_meta` (claves REAL_HOMES_*, propias del tema). IDs de
-// taxonomía confirmados contra la API en vivo:
-// tipo → propiedad-tipo (casa=82, departamento=43, terreno=40,
-// local-comercial=72, oficina=59, galpón=88; "monoambiente"=89 no tiene
-// mapeo interno, no vale la pena);
-// operación → propiedad-estado (venta=83, alquiler=23; "anticrético"=74
-// tiene 0 avisos, no se mapea).
-const SCB_TIPO = { casa: 82, departamento: 43, terreno: 40, local: 72, oficina: 59, deposito: 88 };
-const SCB_ESTADO = { venta: 83, alquiler: 23 };
-const SCB_POR_PAGINA = 30;
-const SCB_PAGINAS_MAX = 4; // mismo tope prudente que las demás fuentes
-
-function limpiarHtmlScb(s) {
-  return String(s || '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&#8211;|&#8212;/g, '-')
-    .replace(/&amp;/g, '&')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function normalizarScb(r, tipo) {
-  const meta = r.property_meta || {};
-  const precio = Number(meta.REAL_HOMES_property_price) || null;
-  const dormitorios = Number(meta.REAL_HOMES_property_bedrooms) || null;
-  const banos = Number(meta.REAL_HOMES_property_bathrooms) || null;
-  const m2Construccion = Number(meta.REAL_HOMES_property_size) || null;
-  const m2Terreno = Number(meta.REAL_HOMES_property_lot_size) || null;
-  const imagenes = Array.isArray(meta.REAL_HOMES_property_images)
-    ? meta.REAL_HOMES_property_images.map((i) => i.url).filter(Boolean).slice(0, 6)
-    : [];
-  const loc = meta.REAL_HOMES_property_location || {};
-  return {
-    fuente: 'Santa Cruz Bienes Raíces',
-    titulo: (r.title && r.title.rendered) || '(sin título)',
-    precio,
-    dormitorios: dormitorios > 0 ? dormitorios : null,
-    banos: banos > 0 ? banos : null,
-    m2Terreno: TIPOS_TERRENO.has(tipo) ? m2Terreno || null : null,
-    m2Construccion: TIPOS_TERRENO.has(tipo) ? null : m2Construccion || null,
-    zona: meta.REAL_HOMES_property_address || '',
-    direccion: '',
-    lat: Number(loc.latitude) || null,
-    lon: Number(loc.longitude) || null,
-    imagen: imagenes[0] || null,
-    imagenes,
-    link: r.link || '',
-    descripcion: limpiarHtmlScb(r.content && r.content.rendered),
-    oficina: '',
-    fecha: r.date || null,
-    // El contacto real del captador SÍ está disponible (endpoint
-    // /wp-json/wp/v2/agentes/:id, verificado con WhatsApp/email reales) pero
-    // resolverlo pide una llamada extra por cada agente — se deja para una
-    // segunda pasada si hace falta, para no arriesgar esta fuente nueva con
-    // más pedidos de los necesarios en el primer despliegue.
-    asesor: '',
-    whatsapp: '',
-    telefono: '',
-    email: '',
-  };
-}
-
-async function fetchScb(req) {
-  const tipoId = SCB_TIPO[req.tipo];
-  // Mismo motivo que los guards de las demás fuentes: sin esto, un tipo sin
-  // mapeo mandaría la búsqueda sin filtro de propiedad-tipo, trayendo
-  // resultados de TODOS los tipos sin filtrar.
-  if (!tipoId) return [];
-  const estadoId = SCB_ESTADO[req.operacion] || SCB_ESTADO.venta;
-  const items = [];
-  for (let p = 1; p <= SCB_PAGINAS_MAX; p++) {
-    const url = `https://santacruzbienesraices.com/wp-json/wp/v2/propiedad?propiedad-tipo=${tipoId}&propiedad-estado=${estadoId}&per_page=${SCB_POR_PAGINA}&page=${p}`;
-    let d;
-    try {
-      d = await fetchJson(url);
-    } catch (e) {
-      if (p === 1) throw new Error('Respuesta inesperada de Santa Cruz Bienes Raíces');
-      break; // páginas siguientes: si fallan (ej. se pasó del total), nos quedamos con lo ya traído
-    }
-    if (!Array.isArray(d) || !d.length) break;
-    items.push(...d.map((r) => normalizarScb(r, req.tipo)));
-    if (d.length < SCB_POR_PAGINA) break; // página incompleta = era la última
-  }
-  return items;
-}
-
 // ---------- Mobiliario App (mobiliario.app) ----------
 // A diferencia de C21/RE/MAX/BienInmuebles, este portal NO tiene un endpoint
 // de búsqueda masiva — su robots.txt bloquea /api explícitamente (verificado
@@ -2503,17 +2409,16 @@ async function buscarTodo(req) {
     }
   }
 
-  const [c21, remax, bien, mobiliario, scb] = await Promise.all([
+  const [c21, remax, bien, mobiliario] = await Promise.all([
     fetchConEstado('Century 21', fetchC21(req)),
     // Se le pide a RE/MAX el rango con margen (su filtro corre en su propio
     // servidor); el recorte fino con margen real se hace acá abajo.
     fetchConEstado('RE/MAX', fetchRemax(req, precioMinConMargen, precioMaxConMargen)),
     fetchConEstado('BienInmuebles', fetchBienInmuebles(req, tc)),
     fetchConEstado('Mobiliario App', fetchMobiliario(req, tc)),
-    fetchConEstado('Santa Cruz Bienes Raíces', fetchScb(req)),
   ]);
 
-  let items = [...c21, ...remax, ...bien, ...mobiliario, ...scb];
+  let items = [...c21, ...remax, ...bien, ...mobiliario];
 
   // Aviso de precio inconsistente: cuando el título/descripción del propio
   // aviso menciona un precio bien distinto al campo estructurado del portal
@@ -2531,7 +2436,6 @@ async function buscarTodo(req) {
     'RE/MAX': remax.length,
     BienInmuebles: bien.length,
     'Mobiliario App': mobiliario.length,
-    'Santa Cruz Bienes Raíces': scb.length,
   };
 
   // El nivel se asigna ACÁ (no dentro de los normalizadores normalizarC21/
