@@ -2913,6 +2913,132 @@ async function llamarGemini(system, user, comoJson) {
   return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 }
 
+// ---------- Extracción en tiempo real (Agente de IA de Ingrid) ----------
+// Corre en paralelo al bot conversacional de GHL, no en vez de él. El bot de
+// GHL a veces "dice" que va a guardar un dato o derivar a un humano pero no
+// ejecuta la acción en el mismo turno (límite real de la plataforma,
+// confirmado con muchos casos reales) — y el 2026-08-11 se confirmó además
+// que el bot puede MEZCLAR información de una propiedad que nunca se
+// mencionó en esa conversación puntual. Esto lee el historial real de la
+// conversación (nunca inventa) y corrige los campos casi al instante, en vez
+// de esperar el barrido de 30 min (ingrid-notificacion-blindaje, que sigue
+// existiendo como red de seguridad). Reusa el mismo Gemini gratuito que ya
+// usa el resto de la app.
+
+// IDs de campos y ubicación — hardcodeado a la cuenta real de Ingrid por
+// ahora (único cliente en producción con esto activo). Para el segundo
+// cliente, esto pasa a un mapa por locationId en vez de constantes sueltas.
+const CAMPO_PROPIEDAD_INTERES = 'UtK3kfrpt91CRbTJIowg';
+const CAMPO_MOTIVO_HANDOFF = 'UGHW5AZystxPLaLag0Qz';
+const FALLBACK_MOTIVO_GENERICO = 'Consulta durante la conversación — revisar chat para más detalle';
+
+const PROMPT_EXTRACCION_TIEMPO_REAL =
+  'Sos un extractor de datos para conversaciones reales de WhatsApp de un agente inmobiliario en Santa Cruz de la Sierra, Bolivia. ' +
+  'Te paso el historial reciente de UNA conversación. Tu único trabajo es leer los mensajes tal cual están y devolver JSON con lo que ' +
+  'realmente se dijo — NUNCA inventes ni asumas nada que no esté escrito. ' +
+  'Devolvé EXACTAMENTE estas claves: ' +
+  'propiedad (string): el nombre de la propiedad específica que el LEAD preguntó o confirmó, tal como aparece en la conversación. ' +
+  '"" si no hay ninguna clara, o si el lead mencionó más de una sin definirse. ' +
+  'motivo (string): en una frase corta y concreta, qué necesita realmente el lead que amerite atención humana (precio especial, ' +
+  'financiamiento, hablar con Ingrid, no encontró lo que busca, requerimiento distinto, otro agente coordinando, etc.). "" si no aplica. ' +
+  'necesitaHumano (boolean): true si de la conversación se desprende que el lead necesita o pidió atención de una persona real. ' +
+  'confusionDetectada (boolean): true SOLO si alguna respuesta del BOT (nunca del lead) menciona una propiedad, precio o dato que ' +
+  'nunca fue mencionado ni preguntado por el lead en ESTA misma conversación — es decir, el bot mezcló info de otra conversación o inventó. ' +
+  'detalleConfusion (string): si confusionDetectada=true, citá textual la frase del bot que no corresponde. "" si no aplica. ' +
+  'Devolvé SOLO el JSON, sin texto extra ni bloques de código.';
+
+async function fetchMensajesGHL(location, conversationId, limite) {
+  const res = await fetch(`https://services.leadconnectorhq.com/conversations/${conversationId}/messages?limit=${limite || 20}`, {
+    headers: { Authorization: 'Bearer ' + location.token, Version: '2021-07-28' },
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status + ' trayendo mensajes');
+  const data = await res.json();
+  return data.messages?.messages || [];
+}
+
+async function fetchContactoGHL(location, contactId) {
+  const res = await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}`, {
+    headers: { Authorization: 'Bearer ' + location.token, Version: '2021-07-28' },
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status + ' trayendo contacto');
+  const data = await res.json();
+  return data.contact;
+}
+
+async function actualizarCamposContactoGHL(location, contactId, campos) {
+  const res = await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}`, {
+    method: 'PUT',
+    headers: { Authorization: 'Bearer ' + location.token, Version: '2021-07-28', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customFields: campos }),
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status + ' actualizando contacto: ' + (await res.text()).slice(0, 300));
+  return res.json();
+}
+
+// Corre la extracción para UN contacto/conversación puntual — llamado desde
+// el webhook cada vez que llega un mensaje nuevo. Nunca manda mensajes al
+// lead ni al agente; solo lee y corrige campos. Devuelve un resumen para loguear.
+async function extraerYCorregirTiempoReal(location, contactId, conversationId) {
+  const [contacto, mensajes] = await Promise.all([
+    fetchContactoGHL(location, contactId),
+    fetchMensajesGHL(location, conversationId, 20),
+  ]);
+
+  const transcripcion = mensajes
+    .filter((m) => m.messageType === 'TYPE_WHATSAPP')
+    .reverse()
+    .map((m) => `[${m.direction === 'inbound' ? 'LEAD' : 'BOT'}] ${m.body || '(mensaje sin texto — audio/imagen)'}`)
+    .join('\n');
+
+  if (!transcripcion.trim()) return { sinCambios: true, motivo: 'sin mensajes de texto para analizar' };
+
+  let extraido;
+  try {
+    const respuesta = await llamarGemini(PROMPT_EXTRACCION_TIEMPO_REAL, transcripcion, true);
+    extraido = JSON.parse(respuesta);
+  } catch (e) {
+    return { error: 'Fallo la extracción con Gemini: ' + e.message };
+  }
+
+  // Por cliente, con el ID de Ingrid como respaldo — así un cliente nuevo
+  // solo necesita cargar sus propios IDs de campo (ver POST .../ghl) sin
+  // tocar código.
+  const campoPropiedad = location.propiedadInteresFieldId || CAMPO_PROPIEDAD_INTERES;
+  const campoMotivo = location.motivoHandoffFieldId || CAMPO_MOTIVO_HANDOFF;
+
+  const camposActuales = contacto.customFields || [];
+  const propiedadActual = camposActuales.find((c) => c.id === campoPropiedad)?.value || '';
+  const motivoActual = camposActuales.find((c) => c.id === campoMotivo)?.value || '';
+
+  const camposAActualizar = [];
+  let propiedadCorregida = null;
+  let motivoCorregido = null;
+
+  // Solo pisa la Propiedad Interes si hoy está vacía o en "sin especificar" —
+  // nunca sobreescribe algo que ya quedó bien guardado por el propio bot.
+  if (extraido.propiedad && (!propiedadActual || /sin especificar/i.test(propiedadActual))) {
+    camposAActualizar.push({ id: campoPropiedad, field_value: extraido.propiedad });
+    propiedadCorregida = extraido.propiedad;
+  }
+  // Solo pisa el Motivo Handoff si hoy está vacío o es el texto genérico de siempre.
+  if (extraido.motivo && (!motivoActual || motivoActual.trim() === FALLBACK_MOTIVO_GENERICO)) {
+    camposAActualizar.push({ id: campoMotivo, field_value: extraido.motivo });
+    motivoCorregido = extraido.motivo;
+  }
+
+  if (camposAActualizar.length) {
+    await actualizarCamposContactoGHL(location, contactId, camposAActualizar);
+  }
+
+  return {
+    propiedadCorregida,
+    motivoCorregido,
+    necesitaHumano: !!extraido.necesitaHumano,
+    confusionDetectada: !!extraido.confusionDetectada,
+    detalleConfusion: extraido.detalleConfusion || '',
+  };
+}
+
 const PROMPT_INTERPRETAR =
   'Sos el asistente de un agente inmobiliario en Santa Cruz de la Sierra, Bolivia. Recibís pedidos ' +
   'dictados por voz, a veces desordenados o con palabras repetidas — interpretá la intención real, ' +
@@ -3200,6 +3326,81 @@ function camposRequerimiento(body) {
 async function manejarRequest(req, res) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
+  // Webhook de extracción en tiempo real — lo llama un Workflow de GHL cada
+  // vez que llega un mensaje nuevo en la cuenta de Ingrid (o cualquier otra
+  // location que se sume después). Ver extraerYCorregirTiempoReal más arriba
+  // para el porqué. Protegido por un secreto compartido (query param
+  // `secret`, va en la URL del Webhook action del workflow) — no hay sesión
+  // de usuario acá, así que el secreto es la única barrera.
+  if (url.pathname === '/webhooks/ghl-mensaje' && req.method === 'POST') {
+    const secretoEsperado = process.env.WEBHOOK_SECRET;
+    if (!secretoEsperado || url.searchParams.get('secret') !== secretoEsperado) {
+      return json(res, 401, { error: 'Secreto inválido o no configurado.' });
+    }
+    let body;
+    try {
+      body = await leerBody(req);
+    } catch {
+      return json(res, 400, { error: 'Body inválido.' });
+    }
+    // Flexible a propósito: el payload exacto que manda un Workflow de GHL
+    // depende de cómo José Luis arme el paso de Webhook — se acepta
+    // cualquiera de estos nombres de campo comunes.
+    const contactId = body.contactId || body.contact_id || body.contact?.id;
+    const locationId = body.locationId || body.location_id || body.location?.id || 'c2e5fSjLYJRVGbLREgps';
+    let conversationId = body.conversationId || body.conversation_id;
+    if (!contactId) return json(res, 400, { error: 'Falta contactId en el payload.' });
+
+    const loc = leerLocationsGHL().find((l) => l.locationId === locationId);
+    if (!loc) return json(res, 404, { error: 'No hay una cuenta de GHL configurada para ese locationId.' });
+
+    // Responde YA (el workflow no necesita esperar el resultado) y sigue
+    // procesando en segundo plano — así no se cuelga el paso del workflow
+    // en GHL si Gemini tarda.
+    json(res, 202, { ok: true, procesando: true });
+
+    (async () => {
+      try {
+        if (!conversationId) {
+          const busq = await fetch(
+            `https://services.leadconnectorhq.com/conversations/search?contactId=${contactId}&locationId=${locationId}`,
+            { headers: { Authorization: 'Bearer ' + loc.token, Version: '2021-07-28' } }
+          );
+          const datosBusq = await busq.json();
+          conversationId = datosBusq.conversations?.[0]?.id;
+        }
+        if (!conversationId) {
+          console.error('Webhook tiempo real: no se encontró conversación para', contactId);
+          return;
+        }
+        const resultado = await extraerYCorregirTiempoReal(loc, contactId, conversationId);
+        console.log('Extracción tiempo real', contactId, '->', JSON.stringify(resultado));
+        // Confusión de propiedades detectada — esto es nuevo y serio (el
+        // bot mezclando datos de otra conversación), avisa por correo al
+        // toque en vez de esperar cualquier barrido periódico.
+        if (resultado.confusionDetectada) {
+          const agentesLista = leerAgentes();
+          const agenteDueño = agentesLista.find((a) => a.id === loc.agenteId);
+          const correo = agenteDueño?.correoNotificaciones;
+          if (correo) {
+            const contactoIdNotif = await upsertContactoNotificacionesGHL(loc, { correo });
+            await enviarEmailGHL(
+              loc,
+              contactoIdNotif,
+              correo,
+              '⚠️ El bot mezcló información de otra propiedad (tiempo real)',
+              `<p>Contacto: ${contactId}</p><p>El bot dijo algo que no corresponde a esta conversación:</p><p><em>${escapeHtml(resultado.detalleConfusion)}</em></p>`,
+              true
+            );
+          }
+        }
+      } catch (e) {
+        console.error('Error en extracción de tiempo real para', contactId, ':', e.message);
+      }
+    })();
+    return;
+  }
+
   // Página pública de presentación de propiedades — la abre el CLIENTE
   // desde el link que le llega por WhatsApp, sin ninguna clave. Va antes de
   // cualquier autenticación a propósito. Muestra la marca/contacto del
@@ -3413,10 +3614,21 @@ async function manejarRequest(req, res) {
       if (!body.locationId || !body.token || !body.requerimientoFieldId) {
         return json(res, 400, { error: 'Faltan locationId, token o requerimientoFieldId.' });
       }
+      // Se mezcla con lo que ya había (no se reemplaza entero) — así una
+      // actualización posterior (ej. rotar el token) no borra los campos
+      // opcionales que se hayan cargado antes.
       agente.ghlConfig = {
+        ...(agente.ghlConfig || {}),
         locationId: body.locationId.trim(),
         token: body.token.trim(),
         requerimientoFieldId: body.requerimientoFieldId.trim(),
+        // Opcionales — solo hacen falta si este cliente también usa la
+        // extracción en tiempo real (ver extraerYCorregirTiempoReal). Sin
+        // esto, esa función cae al ID de Ingrid por compatibilidad, así que
+        // para un cliente nuevo hay que cargarlos para que no le pise mal los
+        // campos de otro cliente.
+        ...(body.propiedadInteresFieldId ? { propiedadInteresFieldId: body.propiedadInteresFieldId.trim() } : {}),
+        ...(body.motivoHandoffFieldId ? { motivoHandoffFieldId: body.motivoHandoffFieldId.trim() } : {}),
       };
       guardarAgentes(lista);
       return json(res, 200, { ok: true });
