@@ -1190,7 +1190,14 @@ async function fetchRemax(req, minUsd, maxUsd) {
   }
   // La API no filtra por operación de forma fiable → se filtra acá.
   const opId = req.operacion === 'alquiler' ? 2 : 1;
-  return items.filter((i) => i.transaction_type_id == null || i.transaction_type_id === opId);
+  const filtrados = items.filter((i) => i.transaction_type_id == null || i.transaction_type_id === opId);
+  // Dedupe por link — bug real encontrado 2026-08-14: al paginar en paralelo
+  // (página 1 primero, después 2..N juntas), si el orden de RE/MAX cambia
+  // entre esos dos pedidos (ej. un aviso se actualiza y sube de posición),
+  // el mismo aviso puede caer en dos páginas distintas y salir duplicado —
+  // llegó a ser hasta 92 avisos repetidos en una sola búsqueda de "casa".
+  const vistos = new Set();
+  return filtrados.filter((i) => (vistos.has(i.link) ? false : (vistos.add(i.link), true)));
 }
 
 // ---------- BienInmuebles (bieninmuebles.com.bo/common/php/procesos.php) ----------
@@ -2296,10 +2303,17 @@ async function fetchMobiliario(req, tc) {
     .filter((it) => it && it.operacion === req.operacion && it.tipo === req.tipo);
   // Conversión a US$ acá (no al sincronizar) para usar siempre el tipo de
   // cambio vigente de la búsqueda — mismo criterio que BienInmuebles.
-  return items.map((it) => ({
-    ...it,
-    precio: it.precioCrudo == null ? null : it.monedaCrudo === 'bob' ? Math.round(it.precioCrudo / tc) : it.precioCrudo,
-  }));
+  return items.map((it) => {
+    let precio = it.precioCrudo == null ? null : it.monedaCrudo === 'bob' ? Math.round(it.precioCrudo / tc) : it.precioCrudo;
+    // Se descarta lo implausible, mismo criterio que normalizarC21 (umbralTypo).
+    // Bug real encontrado 2026-08-14: el propio schema.org de Mobiliario App a
+    // veces trunca el precio (ej. una casa con descripción "Precio: $30.000"
+    // pero offers.price=30, perdiendo el ".000") — sin este filtro esos avisos
+    // rotos se iban primeros al ordenar por precio, tapando los resultados reales.
+    const umbralTypo = it.operacion === 'alquiler' ? 10 : 1000;
+    if (precio != null && precio < umbralTypo) precio = null;
+    return { ...it, precio };
+  });
 }
 
 // ---------- Matching de 1 propiedad contra 1 requerimiento ----------
