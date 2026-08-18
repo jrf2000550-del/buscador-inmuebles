@@ -226,9 +226,14 @@
   .fuente-ok { background: var(--ok-soft); color: #86efac; }
   .fuente-mal { background: var(--danger-soft); color: #ffb4b4; }
 
-  #btnMapa, #btnACM { background: var(--panel); color: var(--info); border: 1px solid var(--border); font-weight: 700; padding: 8px 15px; border-radius: 999px; font-size: 12.5px; box-shadow: none; margin-right: 8px; }
-  #btnMapa:hover, #btnACM:hover { border-color: var(--info); filter: none; transform: none; box-shadow: var(--shadow-sm); }
+  #btnMapa, #btnACM, #btnReporteZona { background: var(--panel); color: var(--info); border: 1px solid var(--border); font-weight: 700; padding: 8px 15px; border-radius: 999px; font-size: 12.5px; box-shadow: none; margin-right: 8px; }
+  #btnMapa:hover, #btnACM:hover, #btnReporteZona:hover { border-color: var(--info); filter: none; transform: none; box-shadow: var(--shadow-sm); }
   #mapaWrap { margin-bottom: 20px; margin-top: 10px; }
+  .fila-vitrina { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .fila-vitrina input[type="text"] { flex: 1; min-width: 220px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+  button.chico { padding: 6px 12px; font-size: 12px; box-shadow: none; }
+  button.fantasma { background: transparent; color: var(--muted); border: 1.5px solid var(--border); box-shadow: none; }
+  button.fantasma:hover { color: var(--text); filter: none; }
   #mapa { height: 420px; border-radius: var(--radius); border: 1px solid var(--border-soft); background: var(--panel); box-shadow: var(--shadow); }
   #mapaComparables { height: 320px; border-radius: var(--radius); border: 1px solid var(--border-soft); background: var(--panel); box-shadow: var(--shadow); margin-top: 10px; }
 
@@ -690,6 +695,15 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>
       <span id="btnACMTxt">Generar ACM</span>
     </button>
+    <button type="button" id="btnReporteZona" class="btn-icono" style="display:none">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+      <span id="btnReporteZonaTxt">Reporte de zona para cliente</span>
+    </button>
+    <div id="reporteZonaWrap" class="fila-vitrina" style="display:none; margin: 10px 0">
+      <input type="text" id="linkReporteZona" readonly>
+      <button type="button" class="chico" id="btnCopiarReporteZona">Copiar link</button>
+      <a id="abrirReporteZona" href="#" target="_blank"><button type="button" class="chico fantasma">Abrir →</button></a>
+    </div>
     <div id="mapaWrap" style="display:none">
       <p class="sub" id="mapaInfo"></p>
       <div id="mapa"></div>
@@ -822,6 +836,7 @@ async function iniciarSesion() {
     $('#sesionInfo').innerHTML =
       'Sesión: <strong>' + quien.agente.nombre + '</strong> ' +
       '<a href="/inventario.html"><button type="button" class="btn-secundario">📦 Mi Inventario</button></a> ' +
+      '<a href="/agentes.html"><button type="button" class="btn-secundario">🧑‍💼 Agentes del mercado</button></a> ' +
       '<button type="button" class="btn-secundario" id="btnFeedback">💬 Feedback</button> ' +
       '<button type="button" class="btn-secundario" id="btnSalir">Salir</button>';
     $('#btnSalir').addEventListener('click', () => {
@@ -1115,6 +1130,48 @@ $('#btnAgregarManual').addEventListener('click', () => {
   $('#manualNota').value = '';
 });
 
+// Genera el reporte completo de la zona (todo lo que se está vendiendo/
+// alquilando ahí, sin el filtro de presupuesto/palabras de este cliente
+// puntual) y muestra el link público para pasarle a un cliente. Reusa
+// tipo/operación/zona/m² de la búsqueda activa.
+$('#btnReporteZona').addEventListener('click', async () => {
+  if (!requerimientoActivo) return;
+  const r = requerimientoActivo;
+  $('#btnReporteZonaTxt').textContent = 'Generando…';
+  $('#btnReporteZona').disabled = true;
+  try {
+    const resp = await apiFetch('/api/reporte-zona', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tipo: r.tipo, operacion: r.operacion, zona: r.zona,
+        m2TerrenoMin: r.m2TerrenoMin, m2TerrenoMax: r.m2TerrenoMax,
+        m2ConstruccionMin: r.m2ConstruccionMin, m2ConstruccionMax: r.m2ConstruccionMax,
+        tituloCliente: r.cliente,
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) { alert(data.error || 'No se pudo generar el reporte.'); return; }
+    $('#linkReporteZona').value = data.urlPublica;
+    $('#abrirReporteZona').href = data.urlPublica;
+    $('#reporteZonaWrap').style.display = 'flex';
+    const s = data.resumen;
+    alert(`Reporte generado: ${s.cantidad} propiedad(es) en la zona.` + (s.precioM2Promedio ? ` Promedio US$ ${s.precioM2Promedio}/m².` : ''));
+  } catch {
+    alert('No se pudo conectar con el servidor.');
+  } finally {
+    $('#btnReporteZonaTxt').textContent = 'Reporte de zona para cliente';
+    $('#btnReporteZona').disabled = false;
+  }
+});
+$('#btnCopiarReporteZona').addEventListener('click', async () => {
+  await navigator.clipboard.writeText($('#linkReporteZona').value);
+  const btn = $('#btnCopiarReporteZona');
+  const original = btn.textContent;
+  btn.textContent = '¡Copiado!';
+  setTimeout(() => { btn.textContent = original; }, 1500);
+});
+
 $('#btnACM').addEventListener('click', async () => {
   if (!ultimosAnalisisMercado || !ultimosParamsBusqueda) return;
   const abierto = $('#acmWrap').style.display !== 'none';
@@ -1356,6 +1413,8 @@ async function buscar(r) {
   $('#acmWrap').style.display = 'none';
   $('#acmWrap').innerHTML = '';
   $('#manualesWrap').style.display = 'none';
+  $('#btnReporteZona').style.display = 'none';
+  $('#reporteZonaWrap').style.display = 'none';
 
   const params = new URLSearchParams();
   for (const k of ['operacion','tipo','zona','precioMin','precioMax','moneda','tc','dormitorios','banos','m2TerrenoMin','m2TerrenoMax','m2ConstruccionMin','m2ConstruccionMax','palabras','excluir','filtroEstricto','antiguedadMaxDias']) {
@@ -1422,6 +1481,7 @@ async function buscar(r) {
   $('#btnACM').style.display = hayAcm ? 'inline-flex' : 'none';
   $('#manualesWrap').style.display = hayAcm ? 'block' : 'none';
   if (hayAcm) renderListaManuales();
+  $('#btnReporteZona').style.display = 'inline-flex';
 
   const enviadosActivos = (r.enviados || []).map((e) => e.link);
   $('#zona-resultados').innerHTML = nota + '<div class="grid">' + data.listados.map((i) => `

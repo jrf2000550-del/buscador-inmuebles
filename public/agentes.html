@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agentes del mercado — Buscador de Inmuebles</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#0a0e1a">
+<style>
+  :root {
+    --bg: #0a0e1a; --bg-elevated: #0f1524; --panel: #141b2e; --panel-2: #1a2338; --panel-3: #202b45;
+    --border: #263252; --border-soft: #1d2740; --text: #eef1f8; --muted: #8b95af; --muted-2: #5f6b89;
+    --accent: #ea7c52; --accent-2: #b8582f; --accent-light: #ff9d75; --accent-ink: #200d02;
+    --info: #2dd4bf; --info-2: #14b8a6; --ok: #4ade80; --ok-soft: #10281c;
+    --danger: #f36b6b; --danger-soft: #2c1414; --warn: #fbbf24; --warn-soft: #2e2306;
+    --radius-lg: 20px; --radius: 16px; --radius-sm: 11px; --radius-xs: 8px;
+    --shadow: 0 12px 32px -12px rgba(0,0,0,.55);
+    --font: -apple-system, 'Segoe UI', system-ui, Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: var(--font); color: var(--text); -webkit-font-smoothing: antialiased;
+    background: radial-gradient(1100px 480px at 105% -12%, rgba(234,124,82,.10), transparent),
+      radial-gradient(900px 420px at -8% 8%, rgba(45,212,191,.07), transparent), var(--bg);
+    min-height: 100vh;
+  }
+  header { padding: 18px 28px; border-bottom: 1px solid var(--border-soft); display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; font-weight: 800; letter-spacing: -.02em; margin: 0; }
+  header .subt { color: var(--muted); font-size: 12px; }
+  main { max-width: 980px; margin: 0 auto; padding: 28px; display: grid; gap: 24px; }
+
+  #gate { display: flex; align-items: center; justify-content: center; min-height: 70vh; }
+  #gate .caja {
+    background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: 34px; max-width: 380px; width: 100%; display: grid; gap: 14px; box-shadow: var(--shadow); text-align: center;
+  }
+  #gate h2 { margin: 0; font-size: 19px; font-weight: 800; }
+  #gate p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+  #gate a button { width: 100%; }
+
+  input { background: var(--panel-2); border: 1.5px solid var(--border); color: var(--text); border-radius: var(--radius-xs); padding: 10px 12px; font-size: 14px; font-family: inherit; }
+  input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px rgba(234,124,82,.16); }
+  button {
+    background: linear-gradient(135deg, var(--accent-light), var(--accent) 60%, var(--accent-2)); color: #200d02;
+    font-weight: 800; border: 0; border-radius: var(--radius-xs); padding: 11px 16px; font-size: 14px; cursor: pointer;
+    font-family: inherit; box-shadow: 0 6px 18px -8px rgba(234,124,82,.55);
+  }
+  button:hover { filter: brightness(1.06); }
+  button.chico { padding: 6px 12px; font-size: 12px; box-shadow: none; }
+  button.fantasma { background: transparent; color: var(--muted); border: 1.5px solid var(--border); box-shadow: none; }
+  button.fantasma:hover { color: var(--text); filter: none; }
+
+  .panel { background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius); padding: 20px; }
+  .panel h2 { margin: 0 0 14px; font-size: 15px; font-weight: 800; display: flex; align-items: center; gap: 9px; }
+  .panel h2::before { content: ''; width: 3px; height: 12px; border-radius: 3px; background: linear-gradient(180deg, var(--accent), var(--info)); }
+
+  .sub { color: var(--muted); font-size: 12.5px; margin: 0; }
+  .vacio { color: var(--muted); text-align: center; padding: 30px; font-size: 13px; }
+
+  .stats-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+  .stat-meta { background: var(--bg-elevated); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); padding: 12px; }
+  .stat-meta .num { font-size: 19px; font-weight: 800; }
+  .stat-meta .lbl { color: var(--muted); font-size: 11px; margin-top: 2px; }
+
+  .filtros-agentes { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+  .filtros-agentes input, .filtros-agentes select { width: auto; min-width: 200px; flex: 1; }
+
+  .item-agente { background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); padding: 14px 16px; margin-bottom: 10px; }
+  .item-agente .fila1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .item-agente .nombre { font-weight: 800; font-size: 14.5px; }
+  .item-agente .oficina { color: var(--accent-light); font-size: 12.5px; font-weight: 600; }
+  .item-agente .detalle { color: var(--muted); font-size: 12.5px; line-height: 1.6; margin: 6px 0; }
+  .badge-fuente { font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--panel-3); color: var(--muted); margin-right: 4px; display: inline-block; }
+  .item-agente .acciones { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+
+  .propiedades-agente { margin-top: 8px; font-size: 12px; }
+  .propiedades-agente summary { cursor: pointer; color: var(--muted); user-select: none; }
+  .propiedades-agente summary:hover { color: var(--text); }
+  .lista-props-agente { margin: 8px 0; display: grid; gap: 6px; }
+  .prop-item-agente { display: flex; align-items: center; gap: 8px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 6px 8px; font-size: 12px; }
+  .prop-item-agente .titulo-prop { flex: 1; color: var(--text); }
+  .prop-item-agente .precio-prop { color: var(--info); font-weight: 700; white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<div id="gate">
+  <div class="caja">
+    <h2>Agentes del mercado</h2>
+    <p>Iniciá sesión desde el Buscador de Inmuebles primero — esta sección usa la misma cuenta.</p>
+    <a href="/"><button type="button">Ir al Buscador →</button></a>
+  </div>
+</div>
+
+<div id="app" style="display:none">
+  <header>
+    <div>
+      <h1>🧑‍💼 Agentes del mercado</h1>
+      <div class="subt">Buscador de Inmuebles — Sofymar IA</div>
+    </div>
+    <div style="margin-left:auto; display:flex; gap:10px; align-items:center">
+      <span id="sesionNombre" class="subt"></span>
+      <a href="/"><button type="button" class="fantasma chico">← Volver al buscador</button></a>
+    </div>
+  </header>
+  <main>
+    <div class="panel">
+      <h2>📇 Base de agentes/inmobiliarias</h2>
+      <p class="sub" style="margin-bottom:14px">Se arma sola: cada vez que buscás o generás un reporte de zona, los agentes/inmobiliarias que aparecen en los resultados quedan guardados acá, con todas las propiedades que les vimos.</p>
+      <div class="stats-meta" id="statsAgentes"></div>
+    </div>
+
+    <div class="panel">
+      <div class="filtros-agentes">
+        <input type="text" id="filtroTexto" placeholder="Buscar por nombre, oficina o fuente...">
+        <select id="ordenAgentes">
+          <option value="cantidad">Más propiedades primero</option>
+          <option value="reciente">Vistos más recientemente</option>
+          <option value="nombre">Nombre (A-Z)</option>
+        </select>
+      </div>
+      <div id="listaAgentes"><p class="vacio">Cargando...</p></div>
+    </div>
+  </main>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let API_KEY = localStorage.getItem('buscadorApiKey') || '';
+let todosLosAgentes = [];
+
+async function apiFetch(url, opciones = {}) {
+  const headers = { ...(opciones.headers || {}) };
+  if (API_KEY) headers['X-Api-Key'] = API_KEY;
+  const resp = await fetch(url, { ...opciones, headers });
+  if (resp.status === 401) {
+    localStorage.removeItem('buscadorApiKey');
+    $('#gate').style.display = 'flex';
+    $('#app').style.display = 'none';
+    throw new Error('401 sin autorización');
+  }
+  return resp;
+}
+
+async function iniciar() {
+  if (!API_KEY) return;
+  try {
+    const quien = await (await fetch('/api/whoami', { headers: { 'X-Api-Key': API_KEY } })).json();
+    if (!quien.agente) return;
+    $('#gate').style.display = 'none';
+    $('#app').style.display = 'block';
+    $('#sesionNombre').textContent = 'Sesión: ' + quien.agente.nombre;
+    cargarAgentes();
+  } catch {}
+}
+
+async function cargarAgentes() {
+  const data = await (await apiFetch('/api/captadores')).json();
+  todosLosAgentes = Array.isArray(data) ? data : [];
+  renderStats();
+  renderLista();
+}
+
+function renderStats() {
+  const totalPropiedades = todosLosAgentes.reduce((acc, a) => acc + (a.propiedades || []).length, 0);
+  const fuentes = new Set();
+  todosLosAgentes.forEach((a) => { if (a.fuente) fuentes.add(a.fuente); });
+  $('#statsAgentes').innerHTML = `
+    <div class="stat-meta"><div class="num">${todosLosAgentes.length}</div><div class="lbl">agentes/inmobiliarias</div></div>
+    <div class="stat-meta"><div class="num">${totalPropiedades}</div><div class="lbl">propiedades vistas</div></div>
+    <div class="stat-meta"><div class="num">${fuentes.size}</div><div class="lbl">fuentes distintas</div></div>
+  `;
+}
+
+function tiempoDesde(fechaIso) {
+  if (!fechaIso) return '';
+  const dias = Math.floor((Date.now() - new Date(fechaIso).getTime()) / 86400000);
+  if (dias <= 0) return 'hoy';
+  if (dias === 1) return 'ayer';
+  if (dias < 30) return `hace ${dias} días`;
+  const meses = Math.round(dias / 30);
+  return `hace ${meses} ${meses === 1 ? 'mes' : 'meses'}`;
+}
+
+function renderLista() {
+  const texto = $('#filtroTexto').value.trim().toLowerCase();
+  const orden = $('#ordenAgentes').value;
+  let filtrados = todosLosAgentes.filter((a) => {
+    if (!texto) return true;
+    const campo = `${a.captadorNombre || ''} ${a.captadorOficina || ''} ${a.fuente || ''}`.toLowerCase();
+    return campo.includes(texto);
+  });
+  filtrados = filtrados.slice().sort((a, b) => {
+    if (orden === 'cantidad') return (b.propiedades || []).length - (a.propiedades || []).length;
+    if (orden === 'reciente') return new Date(b.ultimaVez || 0) - new Date(a.ultimaVez || 0);
+    return (a.captadorNombre || '').localeCompare(b.captadorNombre || '');
+  });
+
+  if (!filtrados.length) {
+    $('#listaAgentes').innerHTML = '<p class="vacio">Sin agentes registrados todavía — hacé una búsqueda o generá un reporte de zona.</p>';
+    return;
+  }
+
+  $('#listaAgentes').innerHTML = filtrados.map((a) => {
+    const props = a.propiedades || [];
+    const waHref = a.captadorTelefono ? `https://wa.me/${a.captadorTelefono.replace(/[^\d]/g, '')}` : '';
+    const propsHtml = props.map((p) => `
+      <div class="prop-item-agente">
+        <span class="titulo-prop">${escapeHtml(p.titulo || '')}${p.zona ? ' — ' + escapeHtml(p.zona) : ''}</span>
+        <span class="precio-prop">${p.precio ? 'US$ ' + Number(p.precio).toLocaleString('es-BO') : ''}</span>
+      </div>`).join('');
+    return `
+    <div class="item-agente">
+      <div class="fila1">
+        <span class="nombre">${escapeHtml(a.captadorNombre || 'Sin nombre')}</span>
+        ${a.captadorOficina ? `<span class="oficina">${escapeHtml(a.captadorOficina)}</span>` : ''}
+        <span class="badge-fuente">${escapeHtml(a.fuente || '')}</span>
+      </div>
+      <div class="detalle">
+        ${a.captadorTelefono ? 'Tel: ' + escapeHtml(a.captadorTelefono) + ' · ' : ''}
+        ${a.captadorEmail ? escapeHtml(a.captadorEmail) + ' · ' : ''}
+        ${props.length} propiedad(es) vista(s) · última vez ${tiempoDesde(a.ultimaVez)}
+      </div>
+      <div class="acciones">
+        ${waHref ? `<a href="${waHref}" target="_blank"><button type="button" class="chico">WhatsApp</button></a>` : ''}
+      </div>
+      ${props.length ? `<details class="propiedades-agente"><summary>Ver ${props.length} propiedad(es)</summary><div class="lista-props-agente">${propsHtml}</div></details>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+$('#filtroTexto').addEventListener('input', renderLista);
+$('#ordenAgentes').addEventListener('change', renderLista);
+
+iniciar();
+</script>
+</body>
+</html>

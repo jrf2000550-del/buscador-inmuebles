@@ -759,8 +759,12 @@ function claveCaptador(c) {
   return (c.captadorTelefono || c.captadorEmail || `${c.captadorNombre}|${c.fuente}` || '').toLowerCase().trim();
 }
 
-// `it` es un item normalizado de buscarTodo (título, precio, link, asesor, etc.)
-function registrarCaptador(agenteId, it) {
+// Upsert puro en memoria (sin leer/escribir disco) — separado de
+// registrarCaptador para poder registrar muchos items de una sola búsqueda
+// con UNA sola lectura y UNA sola escritura del archivo (ver
+// registrarCaptadores más abajo). `it` es un item normalizado de buscarTodo
+// (título, precio, link, asesor, etc.); `lista` se muta in-place.
+function upsertCaptadorEnLista(lista, it) {
   if (!it.asesor && !it.telefono && !it.whatsapp && !it.email) return null; // nada que registrar
   const datos = {
     captadorNombre: it.asesor || 'Sin nombre',
@@ -771,7 +775,6 @@ function registrarCaptador(agenteId, it) {
   };
   const clave = claveCaptador(datos);
   if (!clave) return null;
-  const lista = leerCaptadores(agenteId);
   let captador = lista.find((c) => claveCaptador(c) === clave);
   if (!captador) {
     captador = { ...datos, primeraVez: new Date().toISOString(), propiedades: [] };
@@ -788,8 +791,69 @@ function registrarCaptador(agenteId, it) {
     captador.propiedades = captador.propiedades.slice(0, 100);
   }
   captador.ultimaVez = new Date().toISOString();
+  return captador;
+}
+
+// Registra UN captador (lee y guarda el archivo completo) — usado donde solo
+// hay unos pocos items a la vez (ej. las hasta 8 opciones de
+// prepararRevisionCliente). Para registrar muchos de una sola búsqueda, usar
+// registrarCaptadores en vez de llamar esto en loop (evita releer/reescribir
+// el archivo completo por cada item, que con búsquedas de cientos/miles de
+// avisos sería carísimo).
+function registrarCaptador(agenteId, it) {
+  const lista = leerCaptadores(agenteId);
+  const captador = upsertCaptadorEnLista(lista, it);
+  if (!captador) return null;
   guardarCaptadores(agenteId, lista.slice(0, 1000));
   return captador;
+}
+
+// Registra MUCHOS items de una sola búsqueda con una sola lectura/escritura.
+// Usado por GET /api/buscar (cada búsqueda interactiva) y POST
+// /api/reporte-zona (que puede traer miles de avisos de una zona entera).
+function registrarCaptadores(agenteId, items) {
+  if (!items.length) return;
+  const lista = leerCaptadores(agenteId);
+  for (const it of items) upsertCaptadorEnLista(lista, it);
+  guardarCaptadores(agenteId, lista.slice(0, 1000));
+}
+
+// ---------- Reportes de zona (mercado completo, para presentar a clientes) ----------
+// José Luis lo pidió el 2026-08-15, después de que le armamos a mano el
+// análisis de terrenos en Urubó Golf para su clienta Mari Campos: quiere esa
+// misma foto completa de "todo lo que se está vendiendo en una zona" (no solo
+// lo que matchea un requerimiento puntual) generable con un botón desde
+// cualquier búsqueda, para poder presentársela a futuros clientes con un link
+// propio — no un ACM (que es estadística), sino el listado real. Guarda un
+// snapshot (no una búsqueda en vivo cada vez que se abre el link) para que el
+// link que le pasa al cliente no cambie de contenido de un día para el otro.
+function archivoReportesZona(agenteId) {
+  return path.join(DATA_DIR, `reportes-zona-${agenteId || 'sin-agente'}.json`);
+}
+
+function leerReportesZona(agenteId) {
+  try {
+    return JSON.parse(fs.readFileSync(archivoReportesZona(agenteId), 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
+function reporteZonaPorId(agenteId, id) {
+  return leerReportesZona(agenteId).find((r) => r.id === id);
+}
+
+// Mismo criterio que registrarEnvioCliente: id con entropía real (16 bytes
+// vía crypto), porque es la única protección de la página pública /reporte/.
+function guardarReporteZona(agenteId, datos) {
+  const lista = leerReportesZona(agenteId);
+  const registro = { id: crypto.randomBytes(16).toString('hex'), creado: new Date().toISOString(), ...datos };
+  lista.unshift(registro);
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  // Tope de 300 reportes guardados por agente — esto es para presentar a
+  // clientes puntuales, no un historial infinito.
+  fs.writeFileSync(archivoReportesZona(agenteId), JSON.stringify(lista.slice(0, 300), null, 2));
+  return registro;
 }
 
 // Recorre data/requerimientos-*.json de TODOS los agentes y genera una
@@ -1629,6 +1693,37 @@ function guardarEstadoGHL(estado) {
   fs.writeFileSync(GHL_SYNC_ESTADO_FILE, JSON.stringify(estado));
 }
 
+// Clasifica texto libre a uno de los TIPOS reales que maneja la app.
+// Antes solo reconocía 5 tipos (casa/departamento/terreno/oficina/local) —
+// bug real encontrado 2026-08-13: leads que pedían "monoambiente",
+// "depósito", "quinta", etc. (o cuyo texto no tenía la palabra exacta
+// esperada) no matcheaban ninguna, y quedaban sin campos.tipo.
+function detectarTipoDesdeTexto(t) {
+  t = (t || '').toLowerCase();
+  if (/terreno\s*comercial/.test(t)) return 'terreno-comercial';
+  if (/dep[oó]sito|galp[oó]n/.test(t)) return 'deposito';
+  // mono.{0,3}ambiente tolera variantes/typos reales vistos en producción
+  // (2026-08-13: un lead lo escribió "monohambiente").
+  if (/mono.{0,3}ambiente|estudio|studio/.test(t)) return 'departamento';
+  if (/depart|depto/.test(t)) return 'departamento';
+  if (/terreno|lote|solar/.test(t)) return 'terreno';
+  if (/oficina/.test(t)) return 'oficina';
+  if (/\blocal\b/.test(t)) return 'local';
+  if (/quinta/.test(t)) return 'quinta';
+  if (/edificio/.test(t)) return 'edificio';
+  if (/tinglado/.test(t)) return 'tinglado';
+  if (/\brural\b/.test(t)) return 'rural';
+  if (/rancho/.test(t)) return 'rancho';
+  if (/agr[ií]cola/.test(t)) return 'agricolas';
+  if (/ganader/.test(t)) return 'ganaderas';
+  if (/cochera|garaje|garage/.test(t)) return 'cochera';
+  if (/\bhotel\b/.test(t)) return 'hotel';
+  if (/colegio|escuela/.test(t)) return 'colegio';
+  if (/proyecto/.test(t)) return 'proyecto';
+  if (/\bcasa\b/.test(t)) return 'casa';
+  return null;
+}
+
 // Parsea el texto libre que guarda el bot ("Tipo: X | Zona: Y | Presupuesto: Z")
 // a los campos del schema de requerimiento. Best-effort: si el formato no
 // matchea (el bot no siempre lo escribe igual), el texto completo queda en
@@ -1639,14 +1734,13 @@ function parsearRequerimientoLibre(texto) {
   const tipoM = texto.match(/tipo:\s*([^|]+)/i);
   const zonaM = texto.match(/zona:\s*([^|]+)/i);
   const presM = texto.match(/presupuesto:\s*([^|]+)/i);
-  if (tipoM) {
-    const t = tipoM[1].trim().toLowerCase();
-    if (t.includes('depart')) campos.tipo = 'departamento';
-    else if (t.includes('terreno')) campos.tipo = 'terreno';
-    else if (t.includes('oficina')) campos.tipo = 'oficina';
-    else if (t.includes('local')) campos.tipo = 'local';
-    else if (t.includes('casa')) campos.tipo = 'casa';
-  }
+  if (tipoM) campos.tipo = detectarTipoDesdeTexto(tipoM[1]) || undefined;
+  // Fallback: si no hay etiqueta "Tipo:" (el bot a veces guarda texto suelto,
+  // ej. "Busca departamento hasta $70,000") o la etiqueta no matcheó ningún
+  // tipo conocido, se busca la misma señal en todo el texto antes de darlo
+  // por perdido — mejor que quede el requerimiento incompleto (se salta en
+  // el barrido) a que quede mal etiquetado en silencio.
+  if (!campos.tipo) campos.tipo = detectarTipoDesdeTexto(texto) || undefined;
   if (zonaM) campos.zona = zonaM[1].trim();
   if (presM) {
     const textoPresupuesto = presM[1];
@@ -2043,6 +2137,99 @@ function paginaPresentacionCliente(envio, agente) {
 </body></html>`;
 }
 
+// Página pública del reporte de zona (ver POST /api/reporte-zona más abajo).
+// Mismo criterio de privacidad que paginaPresentacionCliente: nunca muestra
+// el contacto ni el link del agente/portal original de cada aviso — solo la
+// marca y el WhatsApp del agente dueño de la cuenta, para que el cliente
+// siempre vuelva a él y no se salte a la competencia. La diferencia con
+// paginaPresentacionCliente es que acá van TODAS las propiedades de la zona,
+// no solo las que un requerimiento puntual aprobó.
+function paginaReporteZona(reporte, agente) {
+  const nombreAgente = escapeHtml((agente && agente.nombre) || 'Tu agente inmobiliario');
+  const inmobiliaria = escapeHtml((agente && agente.inmobiliaria) || '');
+  const contactoAgente = (agente && agente.telefonoContacto) || '';
+  const waHref = contactoAgente ? `https://wa.me/${contactoAgente.replace(/[^\d]/g, '')}` : '';
+  const criterio = [reporte.criterios?.operacion, reporte.criterios?.tipo]
+    .filter(Boolean)
+    .join(' en ');
+  const subtitulo = [criterio, reporte.criterios?.zona ? 'en ' + reporte.criterios.zona : '']
+    .filter(Boolean)
+    .join(' ');
+  const stats = reporte.resumen;
+  const tarjetas = (reporte.propiedades || [])
+    .map((p) => {
+      const fotos = Array.isArray(p.imagenes) && p.imagenes.length ? p.imagenes : p.imagen ? [p.imagen] : [];
+      const galeria = fotos.length
+        ? `<div class="galeria"><img class="principal" src="${escapeHtml(fotos[0])}" alt="" loading="lazy"></div>`
+        : '<div class="sin-foto">Sin foto</div>';
+      const caracteristicas = [
+        p.dormitorios ? `${p.dormitorios} dorm.` : '',
+        p.banos ? `${p.banos} baños` : '',
+        p.m2Terreno ? `${p.m2Terreno} m² terreno` : '',
+        p.m2Construccion ? `${p.m2Construccion} m² constr.` : '',
+      ]
+        .filter(Boolean)
+        .join(' · ');
+      const textoWa = encodeURIComponent(`Hola ${nombreAgente}! Vi en tu reporte de ${reporte.criterios?.zona || 'la zona'} esta propiedad: "${p.titulo}" (US$ ${Number(p.precio || 0).toLocaleString('es-BO')}). Quiero más info.`);
+      const botonCard = waHref ? `<a class="cta-card" href="${waHref}?text=${textoWa}">Consultar 📩</a>` : '';
+      return `
+      <div class="card">
+        ${galeria}
+        <div class="info">
+          <h3>${escapeHtml(p.titulo)}</h3>
+          <p class="precio">US$ ${Number(p.precio || 0).toLocaleString('es-BO')}</p>
+          ${caracteristicas ? `<p class="caracteristicas">${escapeHtml(caracteristicas)}</p>` : ''}
+          ${p.zona ? `<p class="zona">${escapeHtml(p.zona)}</p>` : ''}
+          ${botonCard}
+        </div>
+      </div>`;
+    })
+    .join('');
+  return `<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Opciones en ${escapeHtml(reporte.criterios?.zona || '')} — ${nombreAgente}</title>
+<style>
+  body{font-family:system-ui,-apple-system,sans-serif;background:#0f1720;color:#e8ecf1;margin:0;padding:0}
+  header{padding:24px 20px;text-align:center;border-bottom:1px solid #1f2b38}
+  header h1{margin:0 0 4px;font-size:20px}
+  header p{margin:0;color:#8b9bab;font-size:14px}
+  .stats{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;padding:16px 20px 0}
+  .stat{background:#152230;border:1px solid #223244;border-radius:10px;padding:8px 14px;font-size:12.5px;color:#c3ccd6;text-align:center}
+  .stat strong{display:block;color:#2dd4bf;font-size:16px}
+  main{max-width:960px;margin:0 auto;padding:24px 16px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;margin:20px 0}
+  .card{background:#152230;border-radius:12px;overflow:hidden;border:1px solid #223244}
+  .galeria .principal{width:100%;height:170px;object-fit:cover;display:block;background:#0f1720}
+  .sin-foto{width:100%;height:170px;background:#1c2b3a;display:flex;align-items:center;justify-content:center;color:#5c6b7a;font-size:13px}
+  .info{padding:12px}
+  .info h3{margin:0 0 6px;font-size:15px;line-height:1.3}
+  .precio{margin:0 0 4px;color:#2dd4bf;font-weight:700;font-size:16px}
+  .zona{margin:0 0 4px;color:#8b9bab;font-size:13px}
+  .caracteristicas{margin:0 0 6px;color:#c3ccd6;font-size:13px}
+  .cta{display:block;text-align:center;background:#2dd4bf;color:#0f1720;text-decoration:none;font-weight:700;padding:14px;border-radius:10px;margin-top:8px}
+  .cta-card{display:block;text-align:center;background:#1f3d3a;color:#2dd4bf;text-decoration:none;font-weight:600;padding:10px;border-radius:8px;margin-top:10px;font-size:13px}
+  .cta-card:hover{background:#2dd4bf;color:#0f1720}
+  footer{text-align:center;color:#5c6b7a;font-size:12px;padding:24px}
+</style></head>
+<body>
+  <header>
+    <h1>${nombreAgente}${inmobiliaria ? ' — ' + inmobiliaria : ''}</h1>
+    <p>${escapeHtml(subtitulo)}${reporte.tituloCliente ? ' — para ' + escapeHtml(reporte.tituloCliente) : ''}</p>
+  </header>
+  ${stats ? `<div class="stats">
+    <div class="stat"><strong>${stats.cantidad}</strong>propiedades</div>
+    ${stats.precioMin != null ? `<div class="stat"><strong>US$ ${stats.precioMin.toLocaleString('es-BO')}</strong>desde</div>` : ''}
+    ${stats.precioMax != null ? `<div class="stat"><strong>US$ ${stats.precioMax.toLocaleString('es-BO')}</strong>hasta</div>` : ''}
+    ${stats.precioM2Promedio != null ? `<div class="stat"><strong>US$ ${stats.precioM2Promedio}/m²</strong>promedio</div>` : ''}
+  </div>` : ''}
+  <main>
+    <div class="grid">${tarjetas || '<p>No hay propiedades para mostrar.</p>'}</div>
+    ${waHref ? `<a class="cta" href="${waHref}">Escribile a ${nombreAgente} por WhatsApp</a>` : ''}
+  </main>
+  <footer>Buscador de Inmuebles — Sofymar IA</footer>
+</body></html>`;
+}
+
 let sincronizandoRequerimientosGHL = false;
 
 async function sincronizarRequerimientosGHL() {
@@ -2072,13 +2259,22 @@ async function sincronizarRequerimientosGHL() {
             if (!texto || !texto.trim()) continue;
             const parseado = parsearRequerimientoLibre(texto);
             const existente = porContactId.get(c.id);
+            const campos = camposRequerimiento({
+              cliente: c.contactName || c.firstName || 'Lead de GHL',
+              telefono: c.phone || '',
+              operacion: 'venta',
+              ...parseado,
+            });
+            // camposRequerimiento cae a 'casa' por defecto si no reconoce el
+            // tipo — correcto para el form manual (siempre manda un tipo
+            // real), pero acá tapaba en silencio los leads donde el bot no
+            // capturó el tipo (bug real 2026-08-13: 7 de 15 leads reales
+            // quedaron mal-etiquetados como "casa"). Si detectarTipoDesdeTexto
+            // no encontró nada, se deja vacío a propósito — el barrido ya
+            // sabe saltear requerimientos sin tipo en vez de buscar mal.
+            if (!parseado.tipo) campos.tipo = '';
             porContactId.set(c.id, {
-              ...camposRequerimiento({
-                cliente: c.contactName || c.firstName || 'Lead de GHL',
-                telefono: c.phone || '',
-                operacion: 'venta',
-                ...parseado,
-              }),
+              ...campos,
               id: existente ? existente.id : Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
               creado: existente ? existente.creado : new Date().toISOString(),
               enviados: existente ? existente.enviados || [] : [],
@@ -3432,6 +3628,21 @@ async function manejarRequest(req, res) {
     return res.end(paginaPresentacionCliente(envio, agenteP));
   }
 
+  // Página pública del reporte de zona (ver POST /api/reporte-zona) — mismo
+  // criterio que /p/: sin login, protegida solo por el id de 16 bytes.
+  const mReporteZona = url.pathname.match(/^\/reporte\/([^/]+)\/([^/]+)$/);
+  if (mReporteZona && req.method === 'GET') {
+    const [, agenteIdRZ, reporteId] = mReporteZona;
+    const reporte = reporteZonaPorId(agenteIdRZ, reporteId);
+    const agenteRZ = leerAgentes().find((a) => a.id === agenteIdRZ);
+    if (!reporte || !agenteRZ) {
+      res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end('<h1>No encontrado</h1>');
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    return res.end(paginaReporteZona(reporte, agenteRZ));
+  }
+
   // Página de revisión del AGENTE — mismo criterio de link no adivinable,
   // sin login, para poder abrirla en un toque desde el WhatsApp/correo.
   const mRevision = url.pathname.match(/^\/revisar\/([^/]+)\/([^/]+)$/);
@@ -3970,7 +4181,12 @@ async function manejarRequest(req, res) {
     const lista = leerRequerimientos(agenteId);
     const idx = lista.findIndex((r) => r.id === id);
     if (idx === -1) return json(res, 404, { error: 'No existe ese requerimiento' });
-    const actualizado = { ...lista[idx], ...camposRequerimiento(body) };
+    // Bug real encontrado 2026-08-17: un PUT parcial (ej. {tipo:'departamento'})
+    // pisaba TODOS los campos no incluidos en el body a su default, porque
+    // camposRequerimiento(body) siempre arma un objeto completo — acá se
+    // fusiona sobre el registro existente ANTES de normalizar, para que un
+    // campo omitido conserve su valor actual en vez de borrarse.
+    const actualizado = { ...lista[idx], ...camposRequerimiento({ ...lista[idx], ...body }) };
     lista[idx] = actualizado;
     guardarRequerimientos(lista, agenteId);
     return json(res, 200, actualizado);
@@ -4308,7 +4524,11 @@ async function manejarRequest(req, res) {
     const idx = lista.findIndex((i) => i.id === id);
     if (idx === -1) return json(res, 404, { error: 'No existe ese ítem de inventario.' });
     const body = await leerBody(req);
-    const actualizado = { ...lista[idx], ...camposInventario(body) };
+    // Mismo bug real que en requerimientos (2026-08-17): un PUT parcial
+    // pisaba a su default cualquier campo no incluido en el body, porque
+    // camposInventario(body) siempre arma un objeto completo — se fusiona
+    // sobre el ítem existente ANTES de normalizar.
+    const actualizado = { ...lista[idx], ...camposInventario({ ...lista[idx], ...body }) };
     if (actualizado.precio !== lista[idx].precio) {
       actualizado.historialPrecios = [...(lista[idx].historialPrecios || []), { precio: actualizado.precio, fecha: new Date().toISOString() }];
     }
@@ -4338,6 +4558,93 @@ async function manejarRequest(req, res) {
   // propiedades juntas, para que el agente pueda ubicarlos y gestionar.
   if (url.pathname === '/api/captadores' && req.method === 'GET') {
     return json(res, 200, leerCaptadores(agenteId));
+  }
+
+  // Reporte de zona: "todo lo que se está vendiendo/alquilando en una zona",
+  // no una búsqueda filtrada por presupuesto/palabras de UN cliente. Se arma
+  // con los mismos 4 portales (buscarTodo), pero solo con tipo/operación/
+  // zona/m² — sin precio, sin "palabras", sin filtroEstricto — para que sea
+  // la foto completa del mercado, no un subconjunto. De paso, registra cada
+  // agente/inmobiliaria encontrado en la base de captadores del agente.
+  if (url.pathname === '/api/reporte-zona' && req.method === 'POST') {
+    const body = await leerBody(req);
+    if (!body.tipo || !body.operacion) return json(res, 400, { error: 'Faltan tipo y operación.' });
+    try {
+      const reqInterno = {
+        tipo: body.tipo,
+        operacion: body.operacion,
+        zona: body.zona || '',
+        m2TerrenoMin: body.m2TerrenoMin || '',
+        m2TerrenoMax: body.m2TerrenoMax || '',
+        m2ConstruccionMin: body.m2ConstruccionMin || '',
+        m2ConstruccionMax: body.m2ConstruccionMax || '',
+      };
+      const resultado = await buscarTodo(reqInterno);
+      registrarCaptadores(agenteId, resultado.listados);
+
+      const conUsdM2 = resultado.listados
+        .map((it) => {
+          const m2 = body.tipo === 'terreno' ? it.m2Terreno : it.m2Construccion || it.m2Terreno;
+          return it.precio && m2 ? it.precio / m2 : null;
+        })
+        .filter((n) => n != null);
+      const precios = resultado.listados.map((it) => it.precio).filter((n) => n != null);
+      const resumen = {
+        cantidad: resultado.listados.length,
+        precioMin: precios.length ? Math.min(...precios) : null,
+        precioMax: precios.length ? Math.max(...precios) : null,
+        precioM2Promedio: conUsdM2.length ? Math.round(conUsdM2.reduce((a, b) => a + b, 0) / conUsdM2.length) : null,
+      };
+
+      const registro = guardarReporteZona(agenteId, {
+        criterios: { tipo: body.tipo, operacion: body.operacion, zona: body.zona || '' },
+        tituloCliente: body.tituloCliente || '',
+        resumen,
+        // Snapshot liviano — no todo el objeto de buscarTodo. asesor/oficina/
+        // link quedan guardados acá para el propio José Luis (los ve si abre
+        // el reporte desde su panel), pero paginaReporteZona nunca los
+        // renderiza en la versión pública.
+        propiedades: resultado.listados.map((it) => ({
+          titulo: it.titulo,
+          precio: it.precio ?? null,
+          zona: it.zona || '',
+          dormitorios: it.dormitorios ?? null,
+          banos: it.banos ?? null,
+          m2Terreno: it.m2Terreno ?? null,
+          m2Construccion: it.m2Construccion ?? null,
+          imagen: it.imagen || '',
+          imagenes: Array.isArray(it.imagenes) && it.imagenes.length ? it.imagenes : it.imagen ? [it.imagen] : [],
+          fuente: it.fuente,
+          link: it.link || '',
+          asesor: it.asesor || '',
+          oficina: it.oficina || '',
+        })),
+      });
+
+      return json(res, 200, {
+        id: registro.id,
+        urlPublica: `${BASE_URL_APP}/reporte/${agenteId}/${registro.id}`,
+        resumen,
+        porFuente: resultado.porFuente,
+      });
+    } catch (e) {
+      return json(res, 500, { error: e.message });
+    }
+  }
+
+  // Historial de reportes de zona ya generados — para reabrirlos sin
+  // regenerar (el link público ya sirve solo, esto es para que José Luis los
+  // encuentre de nuevo desde la app sin tener que guardar el link a mano).
+  if (url.pathname === '/api/reportes-zona' && req.method === 'GET') {
+    const lista = leerReportesZona(agenteId).map((r) => ({
+      id: r.id,
+      creado: r.creado,
+      criterios: r.criterios,
+      tituloCliente: r.tituloCliente,
+      resumen: r.resumen,
+      urlPublica: `${BASE_URL_APP}/reporte/${agenteId}/${r.id}`,
+    }));
+    return json(res, 200, lista);
   }
   if (url.pathname.startsWith('/api/alertas/') && url.pathname.endsWith('/leida') && req.method === 'POST') {
     const id = url.pathname.split('/')[3];
@@ -4409,6 +4716,13 @@ async function manejarRequest(req, res) {
     const params = Object.fromEntries(url.searchParams);
     try {
       const resultado = await buscarTodo(params);
+      // Cada búsqueda interactiva alimenta la base de agentes/captadores del
+      // agente logueado (data/captadores-<agenteId>.json) — antes esto solo
+      // pasaba en el barrido automático de GHL. José Luis lo pidió el
+      // 2026-08-15: quiere que CADA búsqueda que hace vaya construyendo su
+      // propia base de datos de qué agente/inmobiliaria vende qué, no solo
+      // cuando hay un lead de GHL de por medio.
+      if (agenteId) registrarCaptadores(agenteId, resultado.listados);
       resultado.linksExternos = linksExternos(params);
       if (iaDisponible() && params.resumir === '1') {
         try {
