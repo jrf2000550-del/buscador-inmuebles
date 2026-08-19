@@ -2522,6 +2522,216 @@ async function fetchMobiliario(req, tc) {
   });
 }
 
+// ---------- CapitalCorp (capitalcorp.com.bo) ----------
+// 5ta fuente, pedida por José Luis el 2026-08-18 ("necesito abarcar todo").
+// Tema WordPress "classifiedengine": no hay API de búsqueda masiva ni
+// schema.org por aviso (a diferencia de Mobiliario App), así que se arma
+// igual que esa: sincronización en segundo plano + caché local, las
+// búsquedas leen de la caché. Dos pasos:
+//  1) Un único pedido público a su endpoint de mapa (admin-ajax.php,
+//     explícitamente permitido en robots.txt: "Allow: /wp-admin/admin-ajax.php")
+//     trae los ~98 avisos vigentes de una sola vez (título, foto, lat/lon,
+//     ubicación, link) — es el mismo pedido que usa el mapa de su propia
+//     página de inicio.
+//  2) Por cada aviso se visita su página individual (con pausa entre
+//     tandas, igual que Mobiliario App) para sacar precio, tipo, m²,
+//     dormitorios/baños y nombre del agente — no vienen en el paso 1.
+// El TELÉFONO se deja deliberadamente vacío: confirmado inspeccionando el
+// DOM que el sitio ofusca el número a propósito (dígitos reales
+// intercalados con dígitos "decoy" ocultos con CSS display:none) — es una
+// protección anti-scraping explícita, no un dato que simplemente falte, y
+// no se intenta esquivarla. El agente puede conseguir el teléfono real
+// abriendo el link directo del aviso, igual que con cualquier otra fuente
+// sin contacto expuesto.
+const CAPITALCORP_CACHE_FILE = path.join(DATA_DIR, 'cache-capitalcorp.json');
+const CAPITALCORP_LOTE = 4;
+const CAPITALCORP_PAUSA_MS = 400;
+const CAPITALCORP_MAX_FALLOS_SEGUIDOS = 8;
+const CAPITALCORP_RESYNC_HORAS = 6;
+
+function leerCacheCapitalCorp() {
+  try {
+    return JSON.parse(fs.readFileSync(CAPITALCORP_CACHE_FILE, 'utf8'));
+  } catch {
+    return { sincronizadoEn: null, enProgreso: false, ultimoError: null, listados: {} };
+  }
+}
+
+function guardarCacheCapitalCorp(cache) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(CAPITALCORP_CACHE_FILE, JSON.stringify(cache));
+}
+
+// Formato boliviano de números: punto de miles, coma decimal (ej.
+// "185.000,00" -> 185000). Se usa tanto para precio como para m².
+function parsearNumeroBoliviano(texto) {
+  if (texto == null) return null;
+  const limpio = String(texto).replace(/\./g, '').replace(',', '.');
+  const n = Number(limpio);
+  return Number.isFinite(n) ? n : null;
+}
+
+function tipoDesdeTextoCapitalCorp(texto) {
+  if (/terrenos?/i.test(texto)) return 'terreno';
+  if (/departamentos?|depto\b/i.test(texto)) return 'departamento';
+  if (/oficinas?/i.test(texto)) return 'oficina';
+  if (/locales?(\s+comerciales?)?/i.test(texto)) return 'local';
+  if (/edificios?/i.test(texto)) return 'edificio';
+  if (/galp(o|ó)n(es)?/i.test(texto)) return 'deposito';
+  if (/quintas?/i.test(texto)) return 'quinta';
+  if (/casas?/i.test(texto)) return 'casa';
+  return null;
+}
+
+// Pedido único público al endpoint de mapa del tema — trae TODOS los avisos
+// vigentes de una vez (confirmado: count=98 al 2026-08-18).
+async function obtenerListadoCapitalCorp() {
+  const res = await fetch('https://capitalcorp.com.bo/wp-admin/admin-ajax.php?action=ce_cemap_fetch_ads', {
+    headers: { 'User-Agent': UA },
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const data = await res.json();
+  if (!Array.isArray(data.data)) throw new Error('Respuesta inesperada de CapitalCorp');
+  return data.data;
+}
+
+async function sincronizarUnaPropiedadCapitalCorp(basica) {
+  const html = await fetchTexto(basica.permalink);
+  const excerptTexto = (basica.post_excerpt || '').replace(/<[^>]+>/g, ' ');
+  const tipo = tipoDesdeTextoCapitalCorp(basica.post_title) || tipoDesdeTextoCapitalCorp(excerptTexto);
+  if (!tipo) return null; // categoría no reconocida — se descarta, no se adivina
+  // Bug real encontrado probando en vivo (2026-08-19): el título no siempre
+  // dice "alquiler" — muchos avisos dicen "ALQUILO" ("Alquilo departamento
+  // amoblado"), que no matcheaba y los dejaba mal clasificados como venta
+  // (y con precio de alquiler real, ej. $450, descartado después por el
+  // filtro de cordura de venta). "alquil" cubre alquiler/alquilo/alquila/alquilan.
+  const operacion = /alquil/i.test(basica.post_title + ' ' + excerptTexto) ? 'alquiler' : 'venta';
+
+  // El precio vive en <div class="price-product">...<span>$185.000,00</span></div>.
+  const mPrecio = html.match(/class="price-product"[\s\S]{0,400}?>\s*(\$[\d.,]+)\s*<\/span>/i);
+  let precio = mPrecio ? parsearNumeroBoliviano(mPrecio[1].replace('$', '')) : null;
+  // Mismo filtro de cordura que las otras fuentes (normalizarC21/fetchMobiliario):
+  // descarta precios implausibles (typos, placeholders sin completar).
+  const umbralTypo = operacion === 'alquiler' ? 10 : 1000;
+  if (precio != null && precio < umbralTypo) precio = null;
+
+  // El tema muestra sus "campos extra" (Superficie, Dormitorios, Baños...)
+  // todos con la misma estructura <label>Nombre: </label><span
+  // class="ext-field-value">valor</span> — se leen todos de una vez sin
+  // asumir cuáles están presentes en cada aviso puntual.
+  const campos = {};
+  for (const m of html.matchAll(/<label[^>]*>([^<:]+):\s*<\/label>\s*<span class="ext-field-value[^"]*"[^>]*>([^<]*)<\/span>/gi)) {
+    campos[m[1].trim().toLowerCase()] = m[2].trim();
+  }
+  const superficie = parsearNumeroBoliviano(campos['superficie']);
+  const dormitorios = parsearNumeroBoliviano(campos['dormitorios'] || campos['habitaciones']);
+  const banos = parsearNumeroBoliviano(campos['baños'] || campos['banos']);
+
+  const mAgente = html.match(/class="[^"]*seller-name[^"]*"[^>]*>([^<]+)</i);
+  // Fecha real de publicación no está disponible — el sitio solo muestra
+  // "hace N días" en la propia página, se convierte a fecha aproximada para
+  // que el filtro de antigüedad de la app pueda usarlo como las otras fuentes.
+  const mDias = html.match(/hace\s+(\d+)\s+d[ií]as?/i);
+  const fecha = mDias ? new Date(Date.now() - Number(mDias[1]) * 86400000).toISOString() : null;
+
+  return {
+    fuente: 'CapitalCorp',
+    operacion,
+    tipo,
+    titulo: basica.post_title || '(sin título)',
+    precio,
+    dormitorios: dormitorios > 0 ? dormitorios : null,
+    banos: banos > 0 ? banos : null,
+    m2Terreno: tipo === 'terreno' ? superficie : null,
+    m2Construccion: tipo !== 'terreno' ? superficie : null,
+    zona: basica.location || '',
+    direccion: '',
+    lat: basica.lat ? Number(basica.lat) : null,
+    lon: basica.lng ? Number(basica.lng) : null,
+    imagen: basica.logo || null,
+    imagenes: basica.logo ? [basica.logo] : [],
+    link: basica.permalink,
+    descripcion: excerptTexto.replace(/&hellip;/g, '…').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim(),
+    oficina: '',
+    fecha,
+    asesor: mAgente ? mAgente[1].trim() : '',
+    whatsapp: '',
+    telefono: '',
+    email: '',
+  };
+}
+
+let sincronizandoCapitalCorp = false;
+
+// Solo 98 avisos (vs. ~7.900 de Mobiliario App), así que a diferencia de esa
+// no vale la pena la complejidad de comparar fechas de modificación — cada
+// sincronización revisita todo, es barato. Progreso previo se preserva por
+// si se corta a mitad de camino (mismo criterio: no perder lo ya bueno).
+async function sincronizarCapitalCorp() {
+  if (sincronizandoCapitalCorp) return;
+  sincronizandoCapitalCorp = true;
+  const cache = leerCacheCapitalCorp();
+  cache.enProgreso = true;
+  cache.ultimoError = null;
+  try {
+    const listado = await obtenerListadoCapitalCorp();
+    const porLink = { ...cache.listados };
+    let fallosSeguidos = 0;
+    for (let i = 0; i < listado.length; i += CAPITALCORP_LOTE) {
+      const tanda = listado.slice(i, i + CAPITALCORP_LOTE);
+      const resultados = await Promise.all(
+        tanda.map(async (b) => {
+          try {
+            const item = await sincronizarUnaPropiedadCapitalCorp(b);
+            fallosSeguidos = 0;
+            return { link: b.permalink, item };
+          } catch (e) {
+            fallosSeguidos++;
+            return { link: b.permalink, error: e.message };
+          }
+        })
+      );
+      for (const r of resultados) {
+        if (r.item) porLink[r.link] = r.item;
+      }
+      cache.listados = porLink;
+      cache.progreso = { procesados: Math.min(i + CAPITALCORP_LOTE, listado.length), total: listado.length };
+      guardarCacheCapitalCorp(cache);
+      if (fallosSeguidos >= CAPITALCORP_MAX_FALLOS_SEGUIDOS) {
+        cache.ultimoError = `Se detuvo tras ${fallosSeguidos} fallos seguidos (posible bloqueo de capitalcorp.com.bo) — quedó con ${Object.keys(porLink).length} de ${listado.length} propiedades.`;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, CAPITALCORP_PAUSA_MS));
+    }
+    // Solo se podan los que ya no están si la corrida terminó completa —
+    // si se cortó por fallos seguidos, no hay forma de saber si el resto
+    // sigue vigente, así que se deja como estaba.
+    if (fallosSeguidos < CAPITALCORP_MAX_FALLOS_SEGUIDOS) {
+      const linksVigentes = new Set(listado.map((b) => b.permalink));
+      for (const link of Object.keys(porLink)) {
+        if (!linksVigentes.has(link)) delete porLink[link];
+      }
+    }
+    cache.listados = porLink;
+    cache.sincronizadoEn = new Date().toISOString();
+  } catch (e) {
+    cache.ultimoError = 'No se pudo sincronizar: ' + e.message;
+  } finally {
+    cache.enProgreso = false;
+    guardarCacheCapitalCorp(cache);
+    sincronizandoCapitalCorp = false;
+  }
+}
+
+// Lee de la caché ya sincronizada (rápido, sin red) — mismo patrón que fetchMobiliario.
+async function fetchCapitalCorp(req) {
+  const cache = leerCacheCapitalCorp();
+  if (!cache.sincronizadoEn && !cache.progreso) {
+    throw new Error(cache.ultimoError || 'Todavía no se sincronizó por primera vez — ya está en camino en segundo plano.');
+  }
+  return Object.values(cache.listados).filter((it) => it && it.operacion === req.operacion && it.tipo === req.tipo);
+}
+
 // ---------- Matching de 1 propiedad contra 1 requerimiento ----------
 // Extraído de buscarTodo (antes vivía inline en su cadena de .filter()) para
 // poder reusarlo comparando UNA propiedad nueva (ficha cargada a mano, o un
@@ -2644,22 +2854,23 @@ async function buscarTodo(req) {
   // haciendo matcheaPropiedad, igual que con las otras 3 fuentes.
   const claveCacheBusqueda = `${req.tipo}|${req.operacion}`;
   const cacheado = cacheBusquedaCruda.get(claveCacheBusqueda);
-  let c21, remax, bien, mobiliario;
+  let c21, remax, bien, mobiliario, capitalcorp;
   if (cacheado && Date.now() - cacheado.timestamp < CACHE_BUSQUEDA_TTL_MS) {
-    ({ c21, remax, bien, mobiliario } = cacheado);
+    ({ c21, remax, bien, mobiliario, capitalcorp } = cacheado);
     Object.assign(estadoFuentes, cacheado.estadoFuentes);
   } else {
-    [c21, remax, bien, mobiliario] = await Promise.all([
+    [c21, remax, bien, mobiliario, capitalcorp] = await Promise.all([
       fetchConEstado('Century 21', fetchC21(req)),
       fetchConEstado('RE/MAX', fetchRemax(req)),
       fetchConEstado('BienInmuebles', fetchBienInmuebles(req, tc)),
       fetchConEstado('Mobiliario App', fetchMobiliario(req, tc)),
+      fetchConEstado('CapitalCorp', fetchCapitalCorp(req)),
     ]);
-    // Solo se cachea si las 4 fuentes respondieron bien — un resultado
+    // Solo se cachea si las 5 fuentes respondieron bien — un resultado
     // parcial por un fallo puntual de un portal no debe quedar pegado 5
     // minutos para todos los demás agentes que busquen lo mismo.
     if (Object.values(estadoFuentes).every((e) => e.ok)) {
-      cacheBusquedaCruda.set(claveCacheBusqueda, { timestamp: Date.now(), c21, remax, bien, mobiliario, estadoFuentes: { ...estadoFuentes } });
+      cacheBusquedaCruda.set(claveCacheBusqueda, { timestamp: Date.now(), c21, remax, bien, mobiliario, capitalcorp, estadoFuentes: { ...estadoFuentes } });
     }
   }
 
@@ -2669,7 +2880,7 @@ async function buscarTodo(req) {
   // búsqueda que caiga en la misma clave (mismo tipo+operación) durante los
   // 5 minutos de vigencia; sin clonar, dos agentes buscando con distinto
   // precio/zona se pisarían esos campos entre sí.
-  let items = [...c21, ...remax, ...bien, ...mobiliario].map((i) => ({ ...i }));
+  let items = [...c21, ...remax, ...bien, ...mobiliario, ...capitalcorp].map((i) => ({ ...i }));
 
   // Aviso de precio inconsistente: cuando el título/descripción del propio
   // aviso menciona un precio bien distinto al campo estructurado del portal
@@ -2687,6 +2898,7 @@ async function buscarTodo(req) {
     'RE/MAX': remax.length,
     BienInmuebles: bien.length,
     'Mobiliario App': mobiliario.length,
+    CapitalCorp: capitalcorp.length,
   };
 
   // El nivel se asigna ACÁ (no dentro de los normalizadores normalizarC21/
@@ -2708,7 +2920,7 @@ async function buscarTodo(req) {
       (a.precio ?? 1e12) - (b.precio ?? 1e12)
   );
 
-  const porFuente = { 'Century 21': 0, 'RE/MAX': 0, BienInmuebles: 0, 'Mobiliario App': 0 };
+  const porFuente = { 'Century 21': 0, 'RE/MAX': 0, BienInmuebles: 0, 'Mobiliario App': 0, CapitalCorp: 0 };
   for (const i of items) porFuente[i.fuente] = (porFuente[i.fuente] || 0) + 1;
   const cantidadCerca = items.filter((i) => i.cercaPresupuesto).length;
 
@@ -2759,7 +2971,7 @@ function mediana(numsOrdenados) {
 // número que ve el agente no depende de qué tan bien redactó el modelo esa
 // tanda.
 const PESO_NIVEL = { A: 3, B: 1, C: 0.5 };
-const PESO_FUENTE = { 'Century 21': 1.15, 'RE/MAX': 1.15, BienInmuebles: 0.9, 'Mobiliario App': 0.9 };
+const PESO_FUENTE = { 'Century 21': 1.15, 'RE/MAX': 1.15, BienInmuebles: 0.9, 'Mobiliario App': 0.9, CapitalCorp: 0.9 };
 const PESO_OUTLIER_B = 0.25; // a un B marcado outlier no se lo excluye, se le baja el peso a esto
 const UMBRAL_OUTLIER = 0.25; // desviación >25% de la mediana (solo-B, o de su cuartil en terreno) = outlier
 const TOPE_PESO_FRACCION = 0.15; // ningún comparable puede aportar más del 15% del peso total
@@ -4862,6 +5074,19 @@ function chequearResyncMobiliario() {
   }
 }
 
+// Mismo patrón que chequearResyncMobiliario, pero para CapitalCorp — solo
+// ~98 avisos, así que cada sincronización completa es rápida.
+function chequearResyncCapitalCorp() {
+  const cache = leerCacheCapitalCorp();
+  const horasDesdeUltimaSync = cache.sincronizadoEn
+    ? (Date.now() - new Date(cache.sincronizadoEn).getTime()) / 3600000
+    : Infinity;
+  if (!cache.enProgreso && horasDesdeUltimaSync >= CAPITALCORP_RESYNC_HORAS) {
+    console.log('Sincronizando CapitalCorp en segundo plano…');
+    sincronizarCapitalCorp().catch((e) => console.error('Error sincronizando CapitalCorp:', e));
+  }
+}
+
 server.listen(PORT, () => {
   console.log(`Buscador de inmuebles corriendo en http://localhost:${PORT}`);
 
@@ -4876,6 +5101,9 @@ server.listen(PORT, () => {
   // siempre después de las primeras horas. Ahora se revisa cada hora
   // mientras el proceso esté vivo, sin importar cuánto tiempo lleve arriba.
   setInterval(chequearResyncMobiliario, 60 * 60 * 1000);
+
+  chequearResyncCapitalCorp();
+  setInterval(chequearResyncCapitalCorp, 60 * 60 * 1000);
 
   // Mismo patrón para los requerimientos de GHL — no hace nada si
   // GHL_LOCATIONS no está configurado (ver leerLocationsGHL).
