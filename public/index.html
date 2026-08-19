@@ -1135,19 +1135,23 @@ $('#btnAgregarManual').addEventListener('click', () => {
 // puntual) y muestra el link público para pasarle a un cliente. Reusa
 // tipo/operación/zona/m² de la búsqueda activa.
 $('#btnReporteZona').addEventListener('click', async () => {
-  if (!requerimientoActivo) return;
+  if (!requerimientoActivo || !ultimosListados.length) return;
   const r = requerimientoActivo;
   $('#btnReporteZonaTxt').textContent = 'Generando…';
   $('#btnReporteZona').disabled = true;
   try {
+    // Manda EXACTAMENTE los resultados que ya están en pantalla (con todos
+    // los filtros de esta búsqueda ya aplicados: zona, precio, palabras,
+    // filtroEstricto, m², antigüedad) — no le pide al servidor que vuelva a
+    // buscar con un criterio recortado, porque eso traía terrenos distintos
+    // a los que José Luis tenía en pantalla (bug real, 2026-08-18).
     const resp = await apiFetch('/api/reporte-zona', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         tipo: r.tipo, operacion: r.operacion, zona: r.zona,
-        m2TerrenoMin: r.m2TerrenoMin, m2TerrenoMax: r.m2TerrenoMax,
-        m2ConstruccionMin: r.m2ConstruccionMin, m2ConstruccionMax: r.m2ConstruccionMax,
         tituloCliente: r.cliente,
+        propiedades: ultimosListados,
       }),
     });
     const data = await resp.json();

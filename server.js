@@ -1368,10 +1368,20 @@ async function fetchBienInmuebles(req, tc) {
   const items = [];
   for (let p = 1; p <= BIEN_PAGINAS_MAX; p++) {
     const d = await fetchBienInmueblesPagina(req, p, modalidad);
+    // Bug real encontrado 2026-08-18 (José Luis reportó "hay un sitio web
+    // caído" — era BienInmuebles marcándose como no disponible en TODA
+    // búsqueda de oficinas en venta): cuando una categoría no tiene ningún
+    // aviso, su API no devuelve un array vacío, devuelve el booleano `false`
+    // tal cual — confirmado pegándole en vivo con id_orig=4 (oficina)
+    // modalidad=1 (venta). Antes esto se trataba igual que una respuesta
+    // rota (bloqueo anti-bot, error del servidor) y tiraba la fuente entera
+    // como "no disponible", cuando en realidad es una respuesta válida de
+    // "cero resultados".
+    if (d === false) break;
     if (!Array.isArray(d)) {
-      // En la página 1 esto significa que la fuente entera falló (ej. el
-      // bloqueo anti-bot de Imunify360 del 2026-07-19) — hay que avisarlo,
-      // no devolver una lista vacía como si simplemente no hubiera avisos.
+      // Esto sí sigue siendo una falla real (ej. el bloqueo anti-bot de
+      // Imunify360 del 2026-07-19, o un error de servidor) — hay que
+      // avisarlo, no devolver una lista vacía como si no hubiera avisos.
       if (p === 1) throw new Error((d && d.message) || 'Respuesta inesperada de BienInmuebles');
       break; // páginas siguientes: si fallan, nos quedamos con lo ya traído
     }
@@ -4569,32 +4579,37 @@ async function manejarRequest(req, res) {
   if (url.pathname === '/api/reporte-zona' && req.method === 'POST') {
     const body = await leerBody(req);
     if (!body.tipo || !body.operacion) return json(res, 400, { error: 'Faltan tipo y operación.' });
+    if (!Array.isArray(body.propiedades)) return json(res, 400, { error: 'Faltan las propiedades a incluir en el reporte.' });
     try {
-      const reqInterno = {
-        tipo: body.tipo,
-        operacion: body.operacion,
-        zona: body.zona || '',
-        m2TerrenoMin: body.m2TerrenoMin || '',
-        m2TerrenoMax: body.m2TerrenoMax || '',
-        m2ConstruccionMin: body.m2ConstruccionMin || '',
-        m2ConstruccionMax: body.m2ConstruccionMax || '',
-      };
-      const resultado = await buscarTodo(reqInterno);
-      registrarCaptadores(agenteId, resultado.listados);
+      // Bug real reportado por José Luis el 2026-08-18: la primera versión
+      // volvía a llamar a buscarTodo acá con solo tipo/operación/zona/m² (sin
+      // precio/palabras/filtroEstricto/excluir), así que el reporte terminaba
+      // trayendo terrenos DISTINTOS a los que él tenía en pantalla — más
+      // amplios que su búsqueda puntual. Ahora el reporte usa exactamente los
+      // resultados que el frontend ya tiene en pantalla (ultimosListados, con
+      // TODOS los filtros de esa búsqueda ya aplicados), no una re-búsqueda
+      // con criterios recortados. Lo único que sigue siendo "de la zona
+      // completa" es que ya no está atado al presupuesto de un cliente si el
+      // agente buscó sin precio — pero nunca inventa resultados que no
+      // estaban en la búsqueda que el agente hizo.
+      const propiedades = body.propiedades;
+      registrarCaptadores(agenteId, propiedades);
 
-      const conUsdM2 = resultado.listados
+      const conUsdM2 = propiedades
         .map((it) => {
           const m2 = body.tipo === 'terreno' ? it.m2Terreno : it.m2Construccion || it.m2Terreno;
           return it.precio && m2 ? it.precio / m2 : null;
         })
         .filter((n) => n != null);
-      const precios = resultado.listados.map((it) => it.precio).filter((n) => n != null);
+      const precios = propiedades.map((it) => it.precio).filter((n) => n != null);
       const resumen = {
-        cantidad: resultado.listados.length,
+        cantidad: propiedades.length,
         precioMin: precios.length ? Math.min(...precios) : null,
         precioMax: precios.length ? Math.max(...precios) : null,
         precioM2Promedio: conUsdM2.length ? Math.round(conUsdM2.reduce((a, b) => a + b, 0) / conUsdM2.length) : null,
       };
+      const porFuente = {};
+      for (const it of propiedades) porFuente[it.fuente] = (porFuente[it.fuente] || 0) + 1;
 
       const registro = guardarReporteZona(agenteId, {
         criterios: { tipo: body.tipo, operacion: body.operacion, zona: body.zona || '' },
@@ -4604,7 +4619,7 @@ async function manejarRequest(req, res) {
         // link quedan guardados acá para el propio José Luis (los ve si abre
         // el reporte desde su panel), pero paginaReporteZona nunca los
         // renderiza en la versión pública.
-        propiedades: resultado.listados.map((it) => ({
+        propiedades: propiedades.map((it) => ({
           titulo: it.titulo,
           precio: it.precio ?? null,
           zona: it.zona || '',
@@ -4625,7 +4640,7 @@ async function manejarRequest(req, res) {
         id: registro.id,
         urlPublica: `${BASE_URL_APP}/reporte/${agenteId}/${registro.id}`,
         resumen,
-        porFuente: resultado.porFuente,
+        porFuente,
       });
     } catch (e) {
       return json(res, 500, { error: e.message });
