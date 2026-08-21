@@ -1169,7 +1169,12 @@ const RMX_CITY_SC = 4; // Santa Cruz de la Sierra
 // RE/MAX expone `total`/`last_page` (paginación estándar Laravel) — se
 // pagina dinámicamente igual que C21. Antes se pedían solo 3 páginas (60
 // avisos) cuando "casa" real ronda 700+ — mismo bug que C21, corregido junto.
-const RMX_PAGINAS_MAX = 40; // 20 avisos/página → techo de 800 avisos, sobre el máximo real visto (730)
+// Subido de 40 a 80 el 2026-08-19: "casa en venta" ya venía pegado al techo
+// viejo (682 de 800, 85%) — sin margen real, cualquier crecimiento normal del
+// inventario se hubiera empezado a recortar en silencio (el corte es
+// Math.min contra el last_page real de la API, así que subir esto no cuesta
+// nada mientras el inventario real sea menor).
+const RMX_PAGINAS_MAX = 80; // 20 avisos/página → techo de 1.600 avisos
 
 // BUG REAL encontrado 2026-08-07 (reportado por José Luis: "busqué casa en
 // venta y salieron casas en alquiler"): esta función pegaba siempre a
@@ -2794,6 +2799,94 @@ function matcheaPropiedad(item, req) {
   return true;
 }
 
+// ---------- Fusión de duplicados entre fuentes ----------
+// José Luis lo pidió el 2026-08-19 ("mejoralo que sea efectivo") después de
+// que el análisis manual de Urubó Golf mostró el mismo terreno publicado en
+// RE/MAX Y en Mobiliario App: mismo precio, misma superficie, mismas
+// coordenadas hasta el 7mo decimal — es literalmente el mismo aviso
+// republicado por el mismo captador (o replicado por el propio portal) en
+// dos portales distintos. Sin fusionar, el agente ve la "misma" propiedad
+// dos veces y la lista se siente más desordenada/redundante de lo que es.
+//
+// Deliberadamente conservador — un falso fusionado (esconder dos
+// propiedades DISTINTAS como si fueran una) es peor que un falso no-
+// fusionado (mostrar un duplicado real dos veces), así que exige evidencia
+// fuerte: mismo precio EXACTO siempre, más:
+//   - coordenadas casi idénticas (< ~30m de distancia), o
+//   - si no hay coordenadas útiles en alguno, mismo m² (terreno o
+//     construcción según corresponda) hasta el metro.
+// Nunca fusiona dentro de la MISMA fuente (eso ya lo resuelve/no debería
+// pasar en el fetch de esa fuente puntual).
+const TOLERANCIA_COORD_DUPLICADO = 0.0003; // ~30m
+
+function esMismoInmueble(a, b) {
+  if (a.fuente === b.fuente) return false;
+  if (a.precio == null || b.precio == null || a.precio !== b.precio) return false;
+  if (a.lat && a.lon && b.lat && b.lon) {
+    const dist = Math.hypot(a.lat - b.lat, a.lon - b.lon);
+    if (dist < TOLERANCIA_COORD_DUPLICADO) return true;
+  }
+  const m2a = a.m2Terreno ?? a.m2Construccion;
+  const m2b = b.m2Terreno ?? b.m2Construccion;
+  if (m2a != null && m2b != null && Math.abs(m2a - m2b) < 1) return true;
+  return false;
+}
+
+// Orden de preferencia para decidir cuál copia queda como tarjeta principal
+// (la que trae más datos útiles gana: más fotos, contacto real del captador).
+const PRIORIDAD_FUENTE_DUPLICADO = { 'Century 21': 1, 'RE/MAX': 2, BienInmuebles: 3, 'Mobiliario App': 4, CapitalCorp: 5 };
+
+// Agrupa por precio EXACTO antes de comparar — con miles de avisos, comparar
+// cada par sería O(n²) sobre toda la lista; como esMismoInmueble siempre
+// exige precio idéntico, alcanza con comparar dentro de cada bolsa de mismo
+// precio (en la práctica, casi siempre de 1-3 avisos), no contra todo.
+function fusionarDuplicados(items) {
+  const porPrecio = new Map();
+  for (const it of items) {
+    if (it.precio == null) continue; // sin precio no puede fusionarse (esMismoInmueble ya lo exige)
+    if (!porPrecio.has(it.precio)) porPrecio.set(it.precio, []);
+    porPrecio.get(it.precio).push(it);
+  }
+
+  // Cada item que termina en un grupo (real, de 2+) apunta al mismo array
+  // `grupo` — el primero de ese array (por PRIORIDAD_FUENTE_DUPLICADO) es el
+  // que va a quedar como tarjeta principal.
+  const grupoDe = new Map();
+  for (const bolsa of porPrecio.values()) {
+    if (bolsa.length < 2) continue;
+    const usados = new Set();
+    for (let i = 0; i < bolsa.length; i++) {
+      if (usados.has(i)) continue;
+      const grupo = [bolsa[i]];
+      for (let j = i + 1; j < bolsa.length; j++) {
+        if (usados.has(j)) continue;
+        if (esMismoInmueble(bolsa[i], bolsa[j])) {
+          grupo.push(bolsa[j]);
+          usados.add(j);
+        }
+      }
+      if (grupo.length > 1) {
+        grupo.sort((x, y) => (PRIORIDAD_FUENTE_DUPLICADO[x.fuente] ?? 9) - (PRIORIDAD_FUENTE_DUPLICADO[y.fuente] ?? 9));
+        for (const it of grupo) grupoDe.set(it, grupo);
+      }
+    }
+  }
+
+  const resultado = [];
+  for (const it of items) {
+    const grupo = grupoDe.get(it);
+    if (!grupo) {
+      resultado.push(it);
+      continue;
+    }
+    if (it !== grupo[0]) continue; // no es la copia principal del grupo — la representa grupo[0]
+    const copia = { ...it };
+    copia.tambienEn = grupo.slice(1).map((d) => ({ fuente: d.fuente, link: d.link }));
+    resultado.push(copia);
+  }
+  return resultado;
+}
+
 // ---------- Búsqueda combinada ----------
 
 // Caché en memoria (se pierde si el proceso reinicia, no hace falta que
@@ -2913,6 +3006,7 @@ async function buscarTodo(req) {
   // contra requerimientos guardados (ver sincronizarRequerimientosGHL y el
   // enganche en sincronizarMobiliario).
   items = items.filter((i) => matcheaPropiedad(i, req));
+  items = fusionarDuplicados(items);
   items.sort(
     (a, b) =>
       Number(b.destaca) - Number(a.destaca) ||
