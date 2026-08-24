@@ -1563,6 +1563,25 @@ async function sincronizarMobiliario() {
   try {
     const sitemap = await obtenerListingsSitemap();
     const porId = { ...cache.listados };
+
+    // Bug real encontrado 2026-08-24 (José Luis: "aparece el link roto" al
+    // abrir un aviso desde los resultados — la propiedad ya no existía en
+    // mobiliario.app, daba su propio "Error 404"): esta poda ANTES vivía
+    // recién después del loop de "pendientes" de más abajo — si el servidor
+    // se reiniciaba a mitad de esa sincronización (pasa seguido en
+    // desarrollo, y puede pasar en producción con un redeploy), la poda
+    // nunca llegaba a correr y los avisos dados de baja se quedaban
+    // cacheados para siempre. El sitemap ya es la lista completa y vigente
+    // apenas se pide, así que la poda puede (y debe) hacerse acá, antes de
+    // arrancar el loop lento — así sobrevive aunque el proceso se corte
+    // después.
+    const idsVigentes = new Set(sitemap.map((s) => s.id));
+    for (const id of Object.keys(porId)) {
+      if (!idsVigentes.has(id)) delete porId[id];
+    }
+    cache.listados = porId;
+    guardarCacheMobiliario(cache);
+
     // Además de lo nuevo/modificado, re-procesa lo que quedó en formato
     // viejo o incompleto — así una sola sincronización arregla sola los
     // datos ya cacheados, sin tener que borrar nada a mano:
@@ -1623,17 +1642,9 @@ async function sincronizarMobiliario() {
       await new Promise((r) => setTimeout(r, MOBILIARIO_PAUSA_MS));
     }
 
-    // Lo que estaba cacheado pero ya NO aparece en el sitemap actual se sacó
-    // de mobiliario.app (vendido, dado de baja) — sin esto, propiedades ya
-    // no disponibles se quedarían mostrándose para siempre. El sitemap que
-    // se pidió arriba es la lista completa vigente, así que cualquier id que
-    // no esté ahí ya no existe del lado de ellos.
-    const idsVigentes = new Set(sitemap.map((s) => s.id));
-    for (const id of Object.keys(porId)) {
-      if (!idsVigentes.has(id)) delete porId[id];
-    }
+    // La poda de avisos dados de baja ya corrió arriba (antes del loop) —
+    // acá solo queda guardar el resultado final del loop.
     cache.listados = porId;
-
     cache.sincronizadoEn = new Date().toISOString();
   } catch (e) {
     cache.ultimoError = 'No se pudo sincronizar: ' + e.message;
@@ -5162,7 +5173,19 @@ function chequearResyncMobiliario() {
   const horasDesdeUltimaSync = cache.sincronizadoEn
     ? (Date.now() - new Date(cache.sincronizadoEn).getTime()) / 3600000
     : Infinity;
-  if (!cache.enProgreso && horasDesdeUltimaSync >= MOBILIARIO_RESYNC_HORAS) {
+  // Bug real encontrado 2026-08-24: acá antes también se chequeaba
+  // `!cache.enProgreso` (el flag GUARDADO EN DISCO) — pero si el proceso se
+  // corta a mitad de una sincronización (pasa seguido: reinicios en
+  // desarrollo, un redeploy en producción), ese `enProgreso: true` queda
+  // grabado para siempre, porque el `finally` que lo pone en `false` nunca
+  // llega a correr. Resultado real observado: Mobiliario App quedó 19 días
+  // sin resincronizar, mostrando propiedades ya dadas de baja (links rotos)
+  // porque `chequearResyncMobiliario` se negaba a reintentar. La protección
+  // contra ejecuciones simultáneas YA la hace `sincronizarMobiliario()` con
+  // el flag en MEMORIA `sincronizandoMobiliario` (se resetea solo con cada
+  // arranque del proceso) — no hace falta duplicarla acá con un flag que
+  // puede quedar "trabado" entre reinicios.
+  if (horasDesdeUltimaSync >= MOBILIARIO_RESYNC_HORAS) {
     console.log('Sincronizando Mobiliario App en segundo plano…');
     sincronizarMobiliario().catch((e) => console.error('Error sincronizando Mobiliario App:', e));
   }
@@ -5175,7 +5198,10 @@ function chequearResyncCapitalCorp() {
   const horasDesdeUltimaSync = cache.sincronizadoEn
     ? (Date.now() - new Date(cache.sincronizadoEn).getTime()) / 3600000
     : Infinity;
-  if (!cache.enProgreso && horasDesdeUltimaSync >= CAPITALCORP_RESYNC_HORAS) {
+  // Mismo fix que chequearResyncMobiliario — no gatear con el `enProgreso`
+  // persistido en disco, que puede quedar trabado en `true` para siempre si
+  // el proceso se corta a mitad de una sincronización.
+  if (horasDesdeUltimaSync >= CAPITALCORP_RESYNC_HORAS) {
     console.log('Sincronizando CapitalCorp en segundo plano…');
     sincronizarCapitalCorp().catch((e) => console.error('Error sincronizando CapitalCorp:', e));
   }
