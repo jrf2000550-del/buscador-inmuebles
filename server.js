@@ -33,6 +33,18 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
 
+// Bug real encontrado 2026-08-25 (José Luis: "no está disponible C21,
+// BienInmuebles y RE/MAX" al mismo tiempo, en local): ninguno de los fetch
+// a portales tenía timeout — si UNA sola conexión se colgaba (más probable
+// ahora que RMX_PAGINAS_MAX subió a 80 pedidos en paralelo), toda la
+// búsqueda quedaba esperando para siempre en vez de fallar y avisar. Node
+// 18+ trae `AbortSignal.timeout()` nativo, sin librerías — se lo pasamos a
+// TODOS los fetch a portales, así cualquier conexión trabada corta sola a
+// los 15s y cae en el manejo de error que ya existía (por página, no rompe
+// toda la fuente; en la página 1, se reporta como "no disponible" en vez
+// de colgar el pedido entero).
+const FETCH_TIMEOUT_MS = 15000;
+
 const TIPOS = new Set([
   'casa', 'departamento', 'terreno', 'local', 'oficina',
   'quinta', 'terreno-comercial', 'edificio', 'deposito', 'tinglado',
@@ -986,7 +998,7 @@ function zonaMatch(item, zona) {
 }
 
 async function fetchJson(url) {
-  const res = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'application/json' } });
+  const res = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'application/json' }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.json();
 }
@@ -1295,6 +1307,7 @@ async function fetchJsonPost(url, params) {
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: new URLSearchParams(params).toString(),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.json();
@@ -1516,7 +1529,10 @@ function normalizarMobiliario(entidad, breadcrumbJson, url) {
 }
 
 async function fetchTexto(url) {
-  const res = await fetch(url, { headers: { 'User-Agent': UA } });
+  // Timeout más largo que FETCH_TIMEOUT_MS porque acá también se descarga
+  // el sitemap.xml completo de Mobiliario App (10.000+ propiedades) — una
+  // descarga legítimamente más pesada que un pedido de búsqueda normal.
+  const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(30000) });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.text();
 }
@@ -2604,6 +2620,7 @@ function tipoDesdeTextoCapitalCorp(texto) {
 async function obtenerListadoCapitalCorp() {
   const res = await fetch('https://capitalcorp.com.bo/wp-admin/admin-ajax.php?action=ce_cemap_fetch_ads', {
     headers: { 'User-Agent': UA },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const data = await res.json();
