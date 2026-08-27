@@ -24,6 +24,22 @@ const PORT = process.env.PORT || 3456;
 // Para armar links absolutos (páginas de presentación de propiedades) en los
 // mensajes que se le mandan al cliente por WhatsApp.
 const BASE_URL_APP = process.env.APP_BASE_URL || 'https://buscador-inmuebles-production.up.railway.app';
+
+// Para endpoints que SÍ corren dentro de un request HTTP real (a diferencia
+// de los jobs de fondo de GHL, que no tienen `req`), es mejor armar la base
+// del link con el Host que el propio cliente usó para llegar — así el link
+// generado siempre funciona sin importar si se accedió por
+// localhost:3456, por la IP de LAN (que cambia de red en red, visto en vivo
+// 3 veces en una sola sesión: 10.10.0.51 → 192.168.3.163 → 192.168.1.5) o
+// por el dominio público real. `APP_BASE_URL` sigue funcionando como
+// override manual si se necesita forzar otra cosa.
+function urlBaseDesdeRequest(req) {
+  if (process.env.APP_BASE_URL) return BASE_URL_APP;
+  const host = req.headers.host;
+  if (!host) return BASE_URL_APP;
+  const proto = req.headers['x-forwarded-proto'] || (host.startsWith('localhost') || /^(127\.|192\.168\.|10\.)/.test(host) ? 'http' : 'https');
+  return `${proto}://${host}`;
+}
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'requerimientos.json');
 const AGENTES_FILE = path.join(DATA_DIR, 'agentes.json');
@@ -5204,7 +5220,7 @@ async function manejarRequest(req, res) {
 
       return json(res, 200, {
         id: registro.id,
-        urlPublica: `${BASE_URL_APP}/reporte/${agenteId}/${registro.id}`,
+        urlPublica: `${urlBaseDesdeRequest(req)}/reporte/${agenteId}/${registro.id}`,
         resumen,
         porFuente,
       });
@@ -5223,7 +5239,7 @@ async function manejarRequest(req, res) {
       criterios: r.criterios,
       tituloCliente: r.tituloCliente,
       resumen: r.resumen,
-      urlPublica: `${BASE_URL_APP}/reporte/${agenteId}/${r.id}`,
+      urlPublica: `${urlBaseDesdeRequest(req)}/reporte/${agenteId}/${r.id}`,
     }));
     return json(res, 200, lista);
   }
