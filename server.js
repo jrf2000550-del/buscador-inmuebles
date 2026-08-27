@@ -2765,6 +2765,236 @@ async function fetchCapitalCorp(req) {
   return Object.values(cache.listados).filter((it) => it && it.operacion === req.operacion && it.tipo === req.tipo);
 }
 
+// ---------- Alfa Bolivia (alfa.bo) ----------
+// 6ta fuente, pedida por José Luis el 2026-08-25 tras analizar a un
+// competidor (Bolivia Inmuebles) que la usa como una de sus fuentes.
+// robots.txt sin restricciones. Es Next.js App Router (RSC) — no hay API
+// REST limpia, pero la propia página de listado (`/propiedades?page=N`, sin
+// JS) ya trae CADA propiedad con todos sus datos (precio, m², dormitorios,
+// baños, agente, oficina, foto) embebida en el HTML — no hace falta visitar
+// la ficha individual de cada una, a diferencia de CapitalCorp/Mobiliario.
+// El dato viene dentro del payload interno de Next (`self.__next_f.push(...)`)
+// con las comillas escapadas UNA vez (`\"clave\":`) porque es JSON dentro de
+// un string JS — se extrae haciendo balanceo manual de llaves (ignorando lo
+// que esté "dentro de comillas") y después desescapando `\"`→`"` y `\\`→`\`
+// antes de JSON.parse. Es más frágil que una API documentada (depende del
+// build interno de Next.js, puede cambiar sin aviso), pero es la única vía
+// real disponible — igual que CapitalCorp, que tampoco tiene API limpia.
+const ALFABOLIVIA_CACHE_FILE = path.join(DATA_DIR, 'cache-alfabolivia.json');
+const ALFABOLIVIA_PAGINAS_MAX = 250; // techo de seguridad (~185 páginas reales vistas el 2026-08-25)
+const ALFABOLIVIA_LOTE = 5;
+const ALFABOLIVIA_PAUSA_MS = 300;
+const ALFABOLIVIA_RESYNC_HORAS = 6;
+
+function leerCacheAlfaBolivia() {
+  try {
+    return JSON.parse(fs.readFileSync(ALFABOLIVIA_CACHE_FILE, 'utf8'));
+  } catch {
+    return { sincronizadoEn: null, enProgreso: false, ultimoError: null, listados: {} };
+  }
+}
+
+function guardarCacheAlfaBolivia(cache) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(ALFABOLIVIA_CACHE_FILE, JSON.stringify(cache));
+}
+
+function tipoDesdeTextoAlfaBolivia(texto) {
+  if (/terreno/i.test(texto)) return 'terreno';
+  if (/departamento/i.test(texto)) return 'departamento';
+  if (/oficina/i.test(texto)) return 'oficina';
+  if (/local/i.test(texto)) return 'local';
+  if (/edificio/i.test(texto)) return 'edificio';
+  if (/galp(o|ó)n/i.test(texto)) return 'deposito';
+  if (/quinta/i.test(texto)) return 'quinta';
+  if (/casa/i.test(texto)) return 'casa';
+  return null;
+}
+
+// Extrae cada objeto `{"slug": ...}` embebido en el HTML crudo de una
+// página de listado. Busca la apertura real de llaves (`lastIndexOf('{', …)`
+// desde el marcador `"slug":`, no asume que "slug" sea la primera clave),
+// balancea llaves ignorando lo que esté dentro de comillas (y saltea
+// cualquier char escapado con `\`, incluida la propia `\"`), y recién ahí
+// desescapa y parsea. Si el formato interno de Next.js cambia algún día y
+// esto deja de encontrar objetos, se degrada solo (0 resultados, no rompe
+// nada) — ver fetchAlfaBolivia más abajo.
+function extraerPropiedadesAlfaBolivia(html) {
+  const marcador = '\\"slug\\":';
+  const objetos = [];
+  let i = 0;
+  while (true) {
+    const real = html.indexOf(marcador, i);
+    if (real === -1) break;
+    const inicioObj = html.lastIndexOf('{', real);
+    if (inicioObj === -1) {
+      i = real + marcador.length;
+      continue;
+    }
+    let profundidad = 0;
+    let j = inicioObj;
+    let dentroString = false;
+    for (; j < html.length; j++) {
+      const c = html[j];
+      if (c === '\\') {
+        j++;
+        continue;
+      }
+      if (c === '"') {
+        dentroString = !dentroString;
+        continue;
+      }
+      if (!dentroString) {
+        if (c === '{') profundidad++;
+        else if (c === '}') {
+          profundidad--;
+          if (profundidad === 0) {
+            j++;
+            break;
+          }
+        }
+      }
+    }
+    const crudo = html.slice(inicioObj, j);
+    const limpio = crudo.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    try {
+      objetos.push(JSON.parse(limpio));
+    } catch {
+      // objeto roto/incompleto (borde de página, truncado) — se descarta, no rompe el resto
+    }
+    i = j > real ? j : real + marcador.length;
+  }
+  return objetos;
+}
+
+async function obtenerPaginaAlfaBolivia(pagina) {
+  const html = await fetchTexto(`https://alfa.bo/propiedades?orden=reciente&page=${pagina}`);
+  return extraerPropiedadesAlfaBolivia(html);
+}
+
+// Una propiedad de Alfa puede tener varias operaciones a la vez (venta Y
+// alquiler) — se genera UN item normalizado por cada operación reconocida,
+// cada uno con su propio precio/moneda (mismo criterio que si fueran avisos
+// separados, ya que así los trata el resto de la app).
+function normalizarAlfaBolivia(p) {
+  const tipo = tipoDesdeTextoAlfaBolivia(p.tipo_inmueble || '');
+  if (!tipo || p.departamento !== 'Santa Cruz') return [];
+  const superficie = p.superficie_total != null ? Math.round(Number(p.superficie_total)) : null;
+  const items = [];
+  for (const op of p.operaciones || []) {
+    const operacion = /alquiler/i.test(op.tipo_operacion || '') ? 'alquiler' : /venta/i.test(op.tipo_operacion || '') ? 'venta' : null;
+    if (!operacion) continue; // ej. "Anticrético" — no es venta ni alquiler tal como los maneja la app
+    items.push({
+      fuente: 'Alfa Bolivia',
+      operacion,
+      tipo,
+      titulo: p.meta_title || `${p.tipo_inmueble} en ${operacion === 'alquiler' ? 'alquiler' : 'venta'}${p.zona ? ' en ' + p.zona : ''}`,
+      precioCrudo: op.precio != null ? Math.round(Number(op.precio)) : null,
+      monedaCrudo: String(op.moneda || 'USD').toUpperCase() === 'BOB' ? 'bob' : 'usd',
+      dormitorios: p.habitaciones > 0 ? p.habitaciones : null,
+      banos: p.banos > 0 ? p.banos : null,
+      m2Terreno: tipo === 'terreno' ? superficie : null,
+      m2Construccion: tipo !== 'terreno' ? superficie : null,
+      zona: [p.zona, p.municipio].filter(Boolean).join(', '),
+      direccion: p.nombre_calle || '',
+      lat: null,
+      lon: null,
+      imagen: p.portada?.url || null,
+      imagenes: p.portada?.url ? [p.portada.url] : [],
+      link: `https://alfa.bo/propiedades/${p.slug}`,
+      descripcion: '',
+      oficina: p.agencia?.nombre || '',
+      fecha: null,
+      asesor: p.agente?.name || '',
+      whatsapp: '',
+      telefono: '',
+      // Alfa no expone teléfono en el listado — sí un email de contacto del
+      // agente (usuario de su plataforma interna), único de las 6 fuentes
+      // que trae esto en vez de un teléfono.
+      email: p.agente?.username || '',
+    });
+  }
+  return items;
+}
+
+let sincronizandoAlfaBolivia = false;
+
+async function sincronizarAlfaBolivia() {
+  if (sincronizandoAlfaBolivia) return;
+  sincronizandoAlfaBolivia = true;
+  const cache = leerCacheAlfaBolivia();
+  cache.enProgreso = true;
+  cache.ultimoError = null;
+  try {
+    const porClave = {};
+    let fallosSeguidos = 0;
+    let terminado = false;
+    for (let p = 1; p <= ALFABOLIVIA_PAGINAS_MAX && !terminado; p += ALFABOLIVIA_LOTE) {
+      const tanda = [];
+      for (let k = 0; k < ALFABOLIVIA_LOTE && p + k <= ALFABOLIVIA_PAGINAS_MAX; k++) tanda.push(p + k);
+      const resultados = await Promise.all(
+        tanda.map(async (pagina) => {
+          try {
+            const props = await obtenerPaginaAlfaBolivia(pagina);
+            fallosSeguidos = 0;
+            return { pagina, props };
+          } catch (e) {
+            fallosSeguidos++;
+            return { pagina, error: e.message };
+          }
+        })
+      );
+      let algunaConDatos = false;
+      for (const r of resultados) {
+        if (r.props && r.props.length) {
+          algunaConDatos = true;
+          for (const prop of r.props) {
+            for (const item of normalizarAlfaBolivia(prop)) {
+              // clave única por aviso+operación (un mismo slug puede generar 2 items si tiene venta y alquiler)
+              porClave[`${prop.slug}|${item.operacion}`] = item;
+            }
+          }
+        }
+      }
+      // Ninguna página de la tanda trajo propiedades = se acabó el catálogo
+      // (llegamos más allá de la última página real) — no es un error.
+      if (!algunaConDatos) terminado = true;
+
+      cache.listados = porClave;
+      cache.progreso = { procesados: Math.min(p + ALFABOLIVIA_LOTE - 1, ALFABOLIVIA_PAGINAS_MAX), total: ALFABOLIVIA_PAGINAS_MAX };
+      guardarCacheAlfaBolivia(cache);
+
+      if (fallosSeguidos >= 8) {
+        cache.ultimoError = `Se detuvo tras ${fallosSeguidos} fallos seguidos — quedó con ${Object.keys(porClave).length} avisos.`;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, ALFABOLIVIA_PAUSA_MS));
+    }
+    cache.listados = porClave;
+    cache.sincronizadoEn = new Date().toISOString();
+  } catch (e) {
+    cache.ultimoError = 'No se pudo sincronizar: ' + e.message;
+  } finally {
+    cache.enProgreso = false;
+    guardarCacheAlfaBolivia(cache);
+    sincronizandoAlfaBolivia = false;
+  }
+}
+
+async function fetchAlfaBolivia(req, tc) {
+  const cache = leerCacheAlfaBolivia();
+  if (!cache.sincronizadoEn && !cache.progreso) {
+    throw new Error(cache.ultimoError || 'Todavía no se sincronizó por primera vez — ya está en camino en segundo plano.');
+  }
+  const items = Object.values(cache.listados).filter((it) => it && it.operacion === req.operacion && it.tipo === req.tipo);
+  return items.map((it) => {
+    let precio = it.precioCrudo == null ? null : it.monedaCrudo === 'bob' ? Math.round(it.precioCrudo / tc) : it.precioCrudo;
+    const umbralTypo = it.operacion === 'alquiler' ? 10 : 1000;
+    if (precio != null && precio < umbralTypo) precio = null;
+    return { ...it, precio };
+  });
+}
+
 // ---------- Matching de 1 propiedad contra 1 requerimiento ----------
 // Extraído de buscarTodo (antes vivía inline en su cadena de .filter()) para
 // poder reusarlo comparando UNA propiedad nueva (ficha cargada a mano, o un
@@ -2862,7 +3092,7 @@ function esMismoInmueble(a, b) {
 
 // Orden de preferencia para decidir cuál copia queda como tarjeta principal
 // (la que trae más datos útiles gana: más fotos, contacto real del captador).
-const PRIORIDAD_FUENTE_DUPLICADO = { 'Century 21': 1, 'RE/MAX': 2, BienInmuebles: 3, 'Mobiliario App': 4, CapitalCorp: 5 };
+const PRIORIDAD_FUENTE_DUPLICADO = { 'Century 21': 1, 'RE/MAX': 2, BienInmuebles: 3, 'Mobiliario App': 4, CapitalCorp: 5, 'Alfa Bolivia': 6 };
 
 // Agrupa por precio EXACTO antes de comparar — con miles de avisos, comparar
 // cada par sería O(n²) sobre toda la lista; como esMismoInmueble siempre
@@ -2975,23 +3205,24 @@ async function buscarTodo(req) {
   // haciendo matcheaPropiedad, igual que con las otras 3 fuentes.
   const claveCacheBusqueda = `${req.tipo}|${req.operacion}`;
   const cacheado = cacheBusquedaCruda.get(claveCacheBusqueda);
-  let c21, remax, bien, mobiliario, capitalcorp;
+  let c21, remax, bien, mobiliario, capitalcorp, alfabolivia;
   if (cacheado && Date.now() - cacheado.timestamp < CACHE_BUSQUEDA_TTL_MS) {
-    ({ c21, remax, bien, mobiliario, capitalcorp } = cacheado);
+    ({ c21, remax, bien, mobiliario, capitalcorp, alfabolivia } = cacheado);
     Object.assign(estadoFuentes, cacheado.estadoFuentes);
   } else {
-    [c21, remax, bien, mobiliario, capitalcorp] = await Promise.all([
+    [c21, remax, bien, mobiliario, capitalcorp, alfabolivia] = await Promise.all([
       fetchConEstado('Century 21', fetchC21(req)),
       fetchConEstado('RE/MAX', fetchRemax(req)),
       fetchConEstado('BienInmuebles', fetchBienInmuebles(req, tc)),
       fetchConEstado('Mobiliario App', fetchMobiliario(req, tc)),
       fetchConEstado('CapitalCorp', fetchCapitalCorp(req)),
+      fetchConEstado('Alfa Bolivia', fetchAlfaBolivia(req, tc)),
     ]);
-    // Solo se cachea si las 5 fuentes respondieron bien — un resultado
+    // Solo se cachea si las 6 fuentes respondieron bien — un resultado
     // parcial por un fallo puntual de un portal no debe quedar pegado 5
     // minutos para todos los demás agentes que busquen lo mismo.
     if (Object.values(estadoFuentes).every((e) => e.ok)) {
-      cacheBusquedaCruda.set(claveCacheBusqueda, { timestamp: Date.now(), c21, remax, bien, mobiliario, capitalcorp, estadoFuentes: { ...estadoFuentes } });
+      cacheBusquedaCruda.set(claveCacheBusqueda, { timestamp: Date.now(), c21, remax, bien, mobiliario, capitalcorp, alfabolivia, estadoFuentes: { ...estadoFuentes } });
     }
   }
 
@@ -3001,7 +3232,7 @@ async function buscarTodo(req) {
   // búsqueda que caiga en la misma clave (mismo tipo+operación) durante los
   // 5 minutos de vigencia; sin clonar, dos agentes buscando con distinto
   // precio/zona se pisarían esos campos entre sí.
-  let items = [...c21, ...remax, ...bien, ...mobiliario, ...capitalcorp].map((i) => ({ ...i }));
+  let items = [...c21, ...remax, ...bien, ...mobiliario, ...capitalcorp, ...alfabolivia].map((i) => ({ ...i }));
 
   // Aviso de precio inconsistente: cuando el título/descripción del propio
   // aviso menciona un precio bien distinto al campo estructurado del portal
@@ -3020,6 +3251,7 @@ async function buscarTodo(req) {
     BienInmuebles: bien.length,
     'Mobiliario App': mobiliario.length,
     CapitalCorp: capitalcorp.length,
+    'Alfa Bolivia': alfabolivia.length,
   };
 
   // El nivel se asigna ACÁ (no dentro de los normalizadores normalizarC21/
@@ -3042,7 +3274,7 @@ async function buscarTodo(req) {
       (a.precio ?? 1e12) - (b.precio ?? 1e12)
   );
 
-  const porFuente = { 'Century 21': 0, 'RE/MAX': 0, BienInmuebles: 0, 'Mobiliario App': 0, CapitalCorp: 0 };
+  const porFuente = { 'Century 21': 0, 'RE/MAX': 0, BienInmuebles: 0, 'Mobiliario App': 0, CapitalCorp: 0, 'Alfa Bolivia': 0 };
   for (const i of items) porFuente[i.fuente] = (porFuente[i.fuente] || 0) + 1;
   const cantidadCerca = items.filter((i) => i.cercaPresupuesto).length;
 
@@ -3093,7 +3325,7 @@ function mediana(numsOrdenados) {
 // número que ve el agente no depende de qué tan bien redactó el modelo esa
 // tanda.
 const PESO_NIVEL = { A: 3, B: 1, C: 0.5 };
-const PESO_FUENTE = { 'Century 21': 1.15, 'RE/MAX': 1.15, BienInmuebles: 0.9, 'Mobiliario App': 0.9, CapitalCorp: 0.9 };
+const PESO_FUENTE = { 'Century 21': 1.15, 'RE/MAX': 1.15, BienInmuebles: 0.9, 'Mobiliario App': 0.9, CapitalCorp: 0.9, 'Alfa Bolivia': 0.9 };
 const PESO_OUTLIER_B = 0.25; // a un B marcado outlier no se lo excluye, se le baja el peso a esto
 const UMBRAL_OUTLIER = 0.25; // desviación >25% de la mediana (solo-B, o de su cuartil en terreno) = outlier
 const TOPE_PESO_FRACCION = 0.15; // ningún comparable puede aportar más del 15% del peso total
@@ -5224,6 +5456,19 @@ function chequearResyncCapitalCorp() {
   }
 }
 
+// Mismo patrón — Alfa Bolivia (~3.300 avisos, más rápido que Mobiliario App
+// porque no visita fichas individuales, solo las páginas de listado).
+function chequearResyncAlfaBolivia() {
+  const cache = leerCacheAlfaBolivia();
+  const horasDesdeUltimaSync = cache.sincronizadoEn
+    ? (Date.now() - new Date(cache.sincronizadoEn).getTime()) / 3600000
+    : Infinity;
+  if (horasDesdeUltimaSync >= ALFABOLIVIA_RESYNC_HORAS) {
+    console.log('Sincronizando Alfa Bolivia en segundo plano…');
+    sincronizarAlfaBolivia().catch((e) => console.error('Error sincronizando Alfa Bolivia:', e));
+  }
+}
+
 server.listen(PORT, () => {
   console.log(`Buscador de inmuebles corriendo en http://localhost:${PORT}`);
 
@@ -5241,6 +5486,9 @@ server.listen(PORT, () => {
 
   chequearResyncCapitalCorp();
   setInterval(chequearResyncCapitalCorp, 60 * 60 * 1000);
+
+  chequearResyncAlfaBolivia();
+  setInterval(chequearResyncAlfaBolivia, 60 * 60 * 1000);
 
   // Mismo patrón para los requerimientos de GHL — no hace nada si
   // GHL_LOCATIONS no está configurado (ver leerLocationsGHL).
