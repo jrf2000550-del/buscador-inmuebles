@@ -1297,130 +1297,164 @@ async function fetchRemax(req, minUsd, maxUsd) {
   return filtrados.filter((i) => (vistos.has(i.link) ? false : (vistos.add(i.link), true)));
 }
 
-// ---------- BienInmuebles (bieninmuebles.com.bo/common/php/procesos.php) ----------
-// Endpoint AJAX interno del sitio (mismo que usa su propio buscador). Sin
-// login, sin API key — un POST público común y corriente.
+// ---------- BienInmuebles (bieninmuebles.com.bo/busqueda-avanzada) ----------
+// Rehecho el 2026-08-28: José Luis reportó "está roto, no está captando
+// bien" — el sitio entero cambió de plataforma (nuevo CMS "SistemaMVCPro"),
+// tirando abajo el endpoint viejo `common/php/procesos.php` (ahora da 404,
+// no es un bug nuestro). El sitio nuevo NO tiene un endpoint AJAX/JSON — es
+// una página server-rendered clásica (`/busqueda-avanzada?familia=&tipo=&
+// modalidad=&pagina=`), así que se scrapea el HTML de cada tarjeta con
+// regex, mismo criterio que CapitalCorp/Alfa Bolivia. Sin login, sin
+// robots.txt (404, sin restricciones).
 
-// IDs verificados probando id_orig 1-12 contra la API en vivo el 2026-07-28.
-// id 9 ("rural") no tiene nombre de categoría expuesto por la API — inferido
-// del contenido real de sus avisos ("Propiedad 632Ha, Zona Pailon").
+// IDs verificados contra el <select name="tipo"> real de la página nueva el
+// 2026-08-28 — resultó ser EXACTAMENTE el mismo mapa que el sitio viejo
+// (conservaron los ids al migrar de plataforma), así que se mantiene tal
+// cual. "10=Parqueo" es nuevo pero no tiene equivalente en la taxonomía de
+// esta app, se deja afuera a propósito (mismo criterio que "rural").
 const BIEN_TIPO = { casa: 1, departamento: 2, terreno: 3, oficina: 4, local: 5, deposito: 6, edificio: 7, rural: 9 };
-const BIEN_FILAS = 60;
-// BienInmuebles no expone un total (a diferencia de C21/RE/MAX) — el único
-// endpoint que lo daría (proceso=getPaginador) nos dejó bloqueados por su
-// protección anti-bot (Imunify360) al probarlo el 2026-07-19, así que no se
-// usa. En cambio, se pide página por página, UNA A LA VEZ (no en paralelo,
-// para ser más suaves con su servidor tras ese bloqueo) hasta que una página
-// vuelva con menos de BIEN_FILAS avisos — señal de que es la última.
-const BIEN_PAGINAS_MAX = 20; // techo de seguridad (1.200 avisos)
+// No expone un total ni cantidad fija por página en ningún campo aparte —
+// se pagina hasta que una página no trae ninguna tarjeta (señal de que ya
+// se pasó del final), igual de simple que antes.
+const BIEN_PAGINAS_MAX = 30; // techo de seguridad (12/página confirmado en vivo → ~360 avisos)
 
-async function fetchJsonPost(url, params) {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'User-Agent': UA,
-      Accept: 'application/json',
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: new URLSearchParams(params).toString(),
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  return res.json();
+// Extrae cada tarjeta `<div class="... advanced-property-card">...</div>`
+// del HTML de una página de resultados. No intenta balancear el div entero
+// (innecesario acá, a diferencia de Alfa Bolivia) — corta por la aparición
+// del siguiente marcador de tarjeta, que alcanza porque cada tarjeta trae
+// todos los campos que necesitamos antes de que empiece la siguiente.
+//
+// El sitio nuevo usa coma como separador de MILES en precio y m² ("52,000
+// USD", "1,200 m²") — formato inglés, sin decimales — a diferencia de Alfa
+// Bolivia/CapitalCorp que usan el formato boliviano (punto de miles, coma
+// decimal). Bug real encontrado probando en vivo 2026-08-28: reusar
+// parsearNumeroBoliviano acá interpretaba "52,000" como "52,000" decimal →
+// 52.0 → redondeado a 52 (una "casa a $52"). Parser propio: solo saca las
+// comas, sin asumir que haya una parte decimal.
+function parsearNumeroComaMiles(texto) {
+  if (texto == null) return null;
+  const n = Number(String(texto).replace(/,/g, ''));
+  return Number.isFinite(n) ? n : null;
 }
 
-function normalizarBienInmuebles(r, tc, tipo, operacion) {
-  // Red de seguridad agregada el 2026-08-07 (mismo criterio que C21) tras
-  // encontrar que RE/MAX mezclaba venta/alquiler en silencio — acá el
-  // parámetro `modalidad` que ya se manda en el POST sí viene respetado
-  // (verificado en vivo, modalidad=1/2 100% consistentes con lo pedido),
-  // pero se chequea igual como respaldo ante un cambio futuro del portal.
-  const modalidadEsperada = operacion === 'alquiler' ? '2' : '1';
-  if (r.modalidad_cata != null && String(r.modalidad_cata) !== modalidadEsperada) return null;
-  const enBs = String(r.moneda_cata) === '1';
-  const crudo = Number(String(r.precio_cata || '').replace(/[^\d.]/g, ''));
+function extraerPropiedadesBienInmuebles(html) {
+  const bloques = html.split('advanced-property-card').slice(1); // el primer trozo es todo lo de ANTES de la primera tarjeta
+  const propiedades = [];
+  for (const bloque of bloques) {
+    const mId = bloque.match(/\/inmueble\/(\d+)/);
+    const mTitulo = bloque.match(/class="lst-title"><a[^>]*>([^<]+)<\/a>/);
+    if (!mId || !mTitulo) continue;
+    const mZona = bloque.match(/<\/h4>\s*<p>([^<]*)<\/p>/);
+    const mOperacion = bloque.match(/class="cate-trix theme-cl">([^<]+)</);
+    const mPrecio = bloque.match(/class="property-real-price[^"]*">[\s\S]{0,150}?>([\d.,]+)\s*<span class="price_moneda">([^<]+)</);
+    const mHab = bloque.match(/>(\d+)\s*Hab\./);
+    const mBanos = bloque.match(/>(\d+)\s*Baños?/);
+    const mM2 = bloque.match(/>([\d.,]+)\s*m²/);
+    const mImg = bloque.match(/<img src="([^"]+)" class="img-responsive"/);
+    propiedades.push({
+      codigo: mId[1],
+      link: `https://bieninmuebles.com.bo/inmueble/${mId[1]}`,
+      titulo: mTitulo[1].trim(),
+      zona: mZona ? mZona[1].trim() : '',
+      operacionTexto: mOperacion ? mOperacion[1].trim() : '',
+      precio: mPrecio ? mPrecio[1] : null,
+      moneda: mPrecio ? mPrecio[2].trim() : null,
+      habitaciones: mHab ? Number(mHab[1]) : null,
+      banos: mBanos ? Number(mBanos[1]) : null,
+      m2: mM2 ? parsearNumeroComaMiles(mM2[1]) : null,
+      imagen: mImg ? mImg[1] : null,
+    });
+  }
+  return propiedades;
+}
+
+function normalizarBienInmuebles(p, tc, tipo, operacion) {
+  // Red de seguridad — misma idea que ya existía con el sitio viejo: el
+  // texto visible tiene que coincidir con lo pedido, por si el filtro
+  // server-side de ellos fallara. Bug real encontrado probando en vivo
+  // 2026-08-28: el label de venta es "En Venta" pero el de alquiler es
+  // "Alquilar" (verbo, no "En Alquiler" como se hubiera asumido) — buscar
+  // la palabra completa "alquiler" no matcheaba nunca y esta red de
+  // seguridad estaba descartando el 100% de los alquileres en silencio.
+  // "alquil" (raíz común) cubre alquiler/alquilar sin depender de la
+  // terminación exacta que use el sitio.
+  const esperado = operacion === 'alquiler' ? 'alquil' : 'venta';
+  if (p.operacionTexto && !new RegExp(esperado, 'i').test(p.operacionTexto)) return null;
+  const enBs = p.moneda === 'Bs';
+  const crudo = p.precio ? parsearNumeroComaMiles(p.precio) : null;
   let precio = crudo ? Math.round(enBs ? crudo / tc : crudo) : null;
-  const dormitorios = Number(r.habitacion_cata);
-  const banos = Number(r.banio_cata);
-  // BienInmuebles solo trae una medida (supterreno_cata) — igual que
-  // Mobiliario App, en terrenos es superficie de lote y en el resto (casa,
-  // depto, oficina, local) es área construida. Antes se guardaba siempre
-  // como m2Terreno sin importar el tipo, lo que rompía los filtros de m²
-  // construidos para oficinas/locales/deptos de esta fuente (encontrado
-  // 2026-07-24 investigando por qué una búsqueda de oficina con m² mínimo
-  // casi no traía resultados).
-  const m2 = Number(r.supterreno_cata) || null;
+  // Mismo filtro de cordura que el resto de las fuentes — no existía en la
+  // integración vieja de BienInmuebles, se agrega ahora de paso.
+  const umbralTypo = operacion === 'alquiler' ? 10 : 1000;
+  if (precio != null && precio < umbralTypo) precio = null;
   return {
     fuente: 'BienInmuebles',
-    titulo: r.nomb_cata || '(sin título)',
+    titulo: p.titulo || '(sin título)',
     precio,
-    dormitorios: dormitorios > 0 ? dormitorios : null,
-    banos: banos > 0 ? banos : null,
-    m2Terreno: TIPOS_TERRENO.has(tipo) ? m2 : null,
-    m2Construccion: TIPOS_TERRENO.has(tipo) ? null : m2,
-    zona: [r.nomb_barri, r.nomb_grup].filter(Boolean).join(', '),
-    direccion: r.direccion_cata || '',
-    lat: Number(r.latitud_cata) || null,
-    lon: Number(r.longitud_cata) || null,
-    imagen: r.nomb_img ? 'https://www.bieninmuebles.com.bo/admin/uploads/catalogo/thumbs/' + r.nomb_img : null,
-    imagenes: r.nomb_img ? ['https://www.bieninmuebles.com.bo/admin/uploads/catalogo/thumbs/' + r.nomb_img] : [],
-    link: 'https://www.bieninmuebles.com.bo/property.php?id=' + r.id_cata,
-    descripcion: r.nomb_cata || '',
-    fecha: null, // el catálogo no expone fecha de publicación
+    dormitorios: p.habitaciones > 0 ? p.habitaciones : null,
+    banos: p.banos > 0 ? p.banos : null,
+    // Una sola medida por tarjeta (igual que el sitio viejo, y que
+    // Mobiliario App): terreno → m2Terreno, todo lo demás → m2Construccion.
+    m2Terreno: TIPOS_TERRENO.has(tipo) ? p.m2 : null,
+    m2Construccion: TIPOS_TERRENO.has(tipo) ? null : p.m2,
+    zona: p.zona,
+    direccion: '',
+    lat: null,
+    lon: null,
+    imagen: p.imagen,
+    imagenes: p.imagen ? [p.imagen] : [],
+    link: p.link,
+    descripcion: '',
+    fecha: null, // el catálogo sigue sin exponer fecha de publicación
     oficina: '',
-    asesor: r.amigo_clie || '',
+    // El listado nuevo ya no muestra nombre de agente ni teléfono en la
+    // tarjeta (antes `amigo_clie` sí traía un nombre) — solo un avatar
+    // genérico que linkea a /agentes. Se deja vacío en vez de inventar; el
+    // agente puede conseguir el contacto abriendo el link directo.
+    asesor: '',
     whatsapp: '',
     telefono: '',
     email: '',
   };
 }
 
+const BIEN_POR_PAGINA = 12; // confirmado en vivo el 2026-08-28
+
 async function fetchBienInmueblesPagina(req, pagina, modalidad) {
-  return fetchJsonPost('https://www.bieninmuebles.com.bo/common/php/procesos.php', {
-    search: '',
-    id_fami: '1', // 1 = Santa Cruz (único departamento que trabajamos)
-    id_orig: String(BIEN_TIPO[req.tipo] || 0),
-    id_habi: '',
-    id_bano: '',
-    id_gara: '',
-    id_carac: '',
-    minprecio: '0',
-    maxprecio: '0',
-    page: String(pagina),
-    filas: String(BIEN_FILAS),
-    modalidad,
-    proceso: 'getCatalogo',
-  }).catch(() => null);
+  const url = `https://bieninmuebles.com.bo/busqueda-avanzada?familia=1&tipo=${BIEN_TIPO[req.tipo] || 0}&modalidad=${modalidad}&pagina=${pagina}`;
+  const html = await fetchTexto(url);
+  const mTotal = html.match(/([\d.,]+)\s*propiedades encontradas/i);
+  return { props: extraerPropiedadesBienInmuebles(html), total: mTotal ? parsearNumeroBoliviano(mTotal[1]) : null };
 }
 
 async function fetchBienInmuebles(req, tc) {
-  // Mismo motivo que los guards de fetchC21/fetchRemax: id_orig=0 (lo que
-  // resultaría de un tipo sin mapeo) devuelve resultados sin filtrar, no
-  // vacío — confirmado contra la API en vivo.
+  // Mismo motivo que los guards de fetchC21/fetchRemax: tipo=0 (lo que
+  // resultaría de un tipo sin mapeo) trae TODOS los tipos sin filtrar, no
+  // vacío.
   if (!BIEN_TIPO[req.tipo]) return [];
   const modalidad = req.operacion === 'alquiler' ? '2' : '1';
   const items = [];
-  for (let p = 1; p <= BIEN_PAGINAS_MAX; p++) {
-    const d = await fetchBienInmueblesPagina(req, p, modalidad);
-    // Bug real encontrado 2026-08-18 (José Luis reportó "hay un sitio web
-    // caído" — era BienInmuebles marcándose como no disponible en TODA
-    // búsqueda de oficinas en venta): cuando una categoría no tiene ningún
-    // aviso, su API no devuelve un array vacío, devuelve el booleano `false`
-    // tal cual — confirmado pegándole en vivo con id_orig=4 (oficina)
-    // modalidad=1 (venta). Antes esto se trataba igual que una respuesta
-    // rota (bloqueo anti-bot, error del servidor) y tiraba la fuente entera
-    // como "no disponible", cuando en realidad es una respuesta válida de
-    // "cero resultados".
-    if (d === false) break;
-    if (!Array.isArray(d)) {
-      // Esto sí sigue siendo una falla real (ej. el bloqueo anti-bot de
-      // Imunify360 del 2026-07-19, o un error de servidor) — hay que
-      // avisarlo, no devolver una lista vacía como si no hubiera avisos.
-      if (p === 1) throw new Error((d && d.message) || 'Respuesta inesperada de BienInmuebles');
-      break; // páginas siguientes: si fallan, nos quedamos con lo ya traído
+
+  const primera = await fetchBienInmueblesPagina(req, 1, modalidad);
+  items.push(...primera.props.map((r) => normalizarBienInmuebles(r, tc, req.tipo, req.operacion)).filter(Boolean));
+
+  // Bug real encontrado probando en vivo 2026-08-28: pedir una página fuera
+  // de rango NO devuelve vacío — el sitio nuevo repite la página 1 tal
+  // cual. Antes de este fix, eso hacía que el loop nunca parara solo
+  // (ninguna página "vacía" para detectar) y terminaba trayendo la MISMA
+  // página repetida hasta el techo de seguridad (8 propiedades reales →
+  // 240 duplicadas). Por eso ahora se calcula la cantidad real de páginas
+  // a partir del contador "N propiedades encontradas" de la página 1, en
+  // vez de confiar en que una página "se acabe" sola.
+  const totalPaginas = Math.min(primera.total ? Math.ceil(primera.total / BIEN_POR_PAGINA) : 1, BIEN_PAGINAS_MAX);
+  for (let p = 2; p <= totalPaginas; p++) {
+    let pagina;
+    try {
+      pagina = await fetchBienInmueblesPagina(req, p, modalidad);
+    } catch {
+      break; // página siguiente falló — nos quedamos con lo ya traído
     }
-    items.push(...d.map((r) => normalizarBienInmuebles(r, tc, req.tipo, req.operacion)));
-    if (d.length < BIEN_FILAS) break; // página incompleta = era la última
+    items.push(...pagina.props.map((r) => normalizarBienInmuebles(r, tc, req.tipo, req.operacion)).filter(Boolean));
   }
   return items;
 }
