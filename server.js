@@ -1021,8 +1021,56 @@ function variantesGenero(palabra) {
   return [...variantes];
 }
 
+// Diccionario de sinónimos reales — palabras vistas en cientos de avisos
+// de las 6 fuentes a lo largo de esta app (no inventadas: reflejan cómo
+// escriben de verdad C21/RE-MAX/BienInmuebles/Mobiliario/CapitalCorp/Alfa).
+// Cada grupo es intercambiable: si el agente busca cualquier palabra del
+// grupo, también se busca el resto — mismo espíritu que el fix de género de
+// arriba, pero para palabras genuinamente distintas que significan lo
+// mismo, no solo formas del mismo adjetivo. Se acentúa siempre con y sin
+// tilde acá mismo (quitarAcentos ya corre sobre el resultado en el llamador,
+// pero conviene que el diccionario sea legible con tildes).
+const SINONIMOS_INMOBILIARIOS = [
+  ['amoblado', 'amueblado', 'equipado'],
+  ['semiamoblado', 'semi amoblado', 'semi-amoblado'],
+  ['garaje', 'cochera', 'parqueo', 'estacionamiento'],
+  ['pileta', 'piscina'],
+  ['duplex', 'dúplex'],
+  ['depto', 'departamento', 'apartamento', 'apto'],
+  ['anticretico', 'anticrético'],
+  ['remodelado', 'renovado', 'refaccionado', 'refaccion', 'refacción'],
+  ['penthouse', 'atico', 'ático'],
+  ['monoambiente', 'estudio', 'studio'],
+  ['preventa', 'pre venta', 'pre-venta', 'en construccion', 'en construcción', 'en pozo', 'planos'],
+  ['balcon', 'balcón', 'terraza'],
+  ['quinta', 'casa de campo'],
+  ['galpon', 'galpón', 'deposito', 'depósito', 'bodega'],
+  ['estrenar', 'a estrenar', 'sin estrenar'],
+  ['condominio', 'condo', 'urbanizacion', 'urbanización'],
+  ['portero', 'guardia', 'seguridad 24', 'porton electrico', 'portón eléctrico'],
+];
+
+// Junta variantes de género/número (arriba) + sinónimos reales (diccionario)
+// en una sola lista de candidatos para comparar contra el texto del aviso.
+// `palabra` llega SIN tildes (el llamador ya corrió quitarAcentos) — acá se
+// le aplica lo mismo a cada sinónimo del diccionario (que sí puede tener
+// tildes, para que quede legible/editable) antes de sumarlo, así todos los
+// candidatos quedan en el mismo formato sin acentos que `texto`.
+function expandirPalabra(palabra) {
+  const candidatos = new Set(variantesGenero(palabra));
+  for (const grupo of SINONIMOS_INMOBILIARIOS) {
+    const grupoPlano = grupo.map((s) => quitarAcentos(s));
+    if (grupoPlano.includes(palabra)) {
+      for (const sinonimo of grupoPlano) {
+        for (const v of variantesGenero(sinonimo)) candidatos.add(v);
+      }
+    }
+  }
+  return [...candidatos];
+}
+
 function coincideAlgunaVariante(texto, palabra) {
-  return variantesGenero(palabra).some((v) => texto.includes(v));
+  return expandirPalabra(palabra).some((v) => texto.includes(v));
 }
 
 // Puntos cardinales: se matchean SOLO contra el campo de zona estructurado
