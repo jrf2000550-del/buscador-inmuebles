@@ -1002,6 +1002,29 @@ function quitarAcentos(s) {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '');
 }
 
+// Bug real encontrado 2026-09-09: José Luis guardó "amoblado" en un
+// requerimiento de una CASA (femenino) en alquiler, y el filtro estricto
+// descartó el 100% de los avisos reales — todos decían "amoblada"
+// ("CASA AMOBLADA EN ALQUILER", "Casa amoblada..."), nunca "amoblado". Es
+// coincidencia de género en español: son palabras distintas letra por
+// letra, un `includes()` normal jamás las iba a matchear, sin importar el
+// tipo de propiedad que se busque. Genera las variantes de género/número
+// más comunes de una palabra (amoblado → amoblada, amoblados, amobladas)
+// para que "Debe mencionar"/"Excluir" no dependan de que el agente haya
+// tipeado exactamente la terminación que usa cada aviso.
+function variantesGenero(palabra) {
+  const variantes = new Set([palabra]);
+  const base = palabra.replace(/(o|a)s?$/, '');
+  if (base !== palabra) {
+    for (const sufijo of ['o', 'a', 'os', 'as']) variantes.add(base + sufijo);
+  }
+  return [...variantes];
+}
+
+function coincideAlgunaVariante(texto, palabra) {
+  return variantesGenero(palabra).some((v) => texto.includes(v));
+}
+
 // Puntos cardinales: se matchean SOLO contra el campo de zona estructurado
 // (evita que "este" pegue dentro de "oeste" o con el "este" demostrativo).
 const CARDINALES = new Set(['norte', 'sur', 'este', 'oeste', 'central', 'centro', 'noroeste', 'noreste', 'sudoeste', 'sudeste']);
@@ -3095,13 +3118,14 @@ function matcheaPropiedad(item, req) {
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
-  if (excluir.length && excluir.some((p) => quitarAcentos(textoItem(item)).includes(quitarAcentos(p)))) return false;
+  const textoItemPlano = quitarAcentos(textoItem(item));
+  if (excluir.length && excluir.some((p) => coincideAlgunaVariante(textoItemPlano, quitarAcentos(p)))) return false;
 
   const destacar = (req.palabras || '')
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
-  item.destaca = destacar.some((p) => quitarAcentos(textoItem(item)).includes(quitarAcentos(p)));
+  item.destaca = destacar.some((p) => coincideAlgunaVariante(textoItemPlano, quitarAcentos(p)));
   if (destacar.length && req.filtroEstricto === '1' && !item.destaca) return false;
 
   return true;
