@@ -80,8 +80,10 @@
   .propiedades-agente summary:hover { color: var(--text); }
   .lista-props-agente { margin: 8px 0; display: grid; gap: 6px; }
   .prop-item-agente { display: flex; align-items: center; gap: 8px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 6px 8px; font-size: 12px; }
-  .prop-item-agente .titulo-prop { flex: 1; color: var(--text); }
+  .prop-item-agente .titulo-prop { flex: 1; color: var(--text); text-decoration: none; }
+  .prop-item-agente a.titulo-prop:hover { color: var(--accent-light); text-decoration: underline; }
   .prop-item-agente .precio-prop { color: var(--info); font-weight: 700; white-space: nowrap; }
+  .badge-tipo { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px; background: var(--panel-3); color: var(--muted-2); white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -115,6 +117,9 @@
     <div class="panel">
       <div class="filtros-agentes">
         <input type="text" id="filtroTexto" placeholder="Buscar por nombre, oficina o fuente...">
+        <select id="filtroTipo">
+          <option value="">Todos los tipos</option>
+        </select>
         <select id="ordenAgentes">
           <option value="cantidad">Más propiedades primero</option>
           <option value="reciente">Vistos más recientemente</option>
@@ -160,7 +165,17 @@ async function cargarAgentes() {
   const data = await (await apiFetch('/api/captadores')).json();
   todosLosAgentes = Array.isArray(data) ? data : [];
   renderStats();
+  poblarFiltroTipo();
   renderLista();
+}
+
+function poblarFiltroTipo() {
+  const tipos = new Set();
+  todosLosAgentes.forEach((a) => (a.propiedades || []).forEach((p) => { if (p.tipo) tipos.add(p.tipo); }));
+  const actual = $('#filtroTipo').value;
+  $('#filtroTipo').innerHTML = '<option value="">Todos los tipos</option>' +
+    [...tipos].sort().map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+  $('#filtroTipo').value = actual;
 }
 
 function renderStats() {
@@ -186,8 +201,10 @@ function tiempoDesde(fechaIso) {
 
 function renderLista() {
   const texto = $('#filtroTexto').value.trim().toLowerCase();
+  const tipo = $('#filtroTipo').value;
   const orden = $('#ordenAgentes').value;
   let filtrados = todosLosAgentes.filter((a) => {
+    if (tipo && !(a.propiedades || []).some((p) => p.tipo === tipo)) return false;
     if (!texto) return true;
     const campo = `${a.captadorNombre || ''} ${a.captadorOficina || ''} ${a.fuente || ''}`.toLowerCase();
     return campo.includes(texto);
@@ -206,11 +223,19 @@ function renderLista() {
   $('#listaAgentes').innerHTML = filtrados.map((a) => {
     const props = a.propiedades || [];
     const waHref = a.captadorTelefono ? `https://wa.me/${a.captadorTelefono.replace(/[^\d]/g, '')}` : '';
-    const propsHtml = props.map((p) => `
+    const propsHtml = props.map((p) => {
+      const etiqueta = escapeHtml(p.titulo || '') + (p.zona ? ' — ' + escapeHtml(p.zona) : '');
+      const tituloHtml = p.link
+        ? `<a class="titulo-prop" href="${escapeHtml(p.link)}" target="_blank" rel="noopener">${etiqueta}</a>`
+        : `<span class="titulo-prop">${etiqueta}</span>`;
+      const tipoTxt = [p.tipo, p.operacion].filter(Boolean).join(' · ');
+      return `
       <div class="prop-item-agente">
-        <span class="titulo-prop">${escapeHtml(p.titulo || '')}${p.zona ? ' — ' + escapeHtml(p.zona) : ''}</span>
+        ${tituloHtml}
+        ${tipoTxt ? `<span class="badge-tipo">${escapeHtml(tipoTxt)}</span>` : ''}
         <span class="precio-prop">${p.precio ? 'US$ ' + Number(p.precio).toLocaleString('es-BO') : ''}</span>
-      </div>`).join('');
+      </div>`;
+    }).join('');
     return `
     <div class="item-agente">
       <div class="fila1">
@@ -236,6 +261,7 @@ function escapeHtml(s) {
 }
 
 $('#filtroTexto').addEventListener('input', renderLista);
+$('#filtroTipo').addEventListener('change', renderLista);
 $('#ordenAgentes').addEventListener('change', renderLista);
 
 iniciar();

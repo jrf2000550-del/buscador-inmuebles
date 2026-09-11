@@ -167,6 +167,7 @@ function registrarAgente({ nombre, email, password, inmobiliaria, oficina }) {
   nombre = String(nombre || '').trim();
   email = String(email || '').trim().toLowerCase();
   if (!nombre) throw new Error('Falta el nombre.');
+  if (!/\S+\s+\S+/.test(nombre)) throw new Error('Escribí tu nombre completo (nombre y apellido).');
   if (!emailValido(email)) throw new Error('El email no es válido.');
   if (!password || password.length < 6) throw new Error('La contraseña debe tener al menos 6 caracteres.');
 
@@ -815,7 +816,7 @@ function upsertCaptadorEnLista(lista, it) {
   }
   const yaTiene = captador.propiedades.some((p) => p.link === it.link);
   if (!yaTiene) {
-    captador.propiedades.unshift({ titulo: it.titulo, precio: it.precio, zona: it.zona, link: it.link || '', vistoEl: new Date().toISOString() });
+    captador.propiedades.unshift({ titulo: it.titulo, precio: it.precio, zona: it.zona, tipo: it.tipo || '', operacion: it.operacion || '', link: it.link || '', vistoEl: new Date().toISOString() });
     captador.propiedades = captador.propiedades.slice(0, 100);
   }
   captador.ultimaVez = new Date().toISOString();
@@ -3355,6 +3356,16 @@ async function buscarTodo(req) {
   // 5 minutos de vigencia; sin clonar, dos agentes buscando con distinto
   // precio/zona se pisarían esos campos entre sí.
   let items = [...c21, ...remax, ...bien, ...mobiliario, ...capitalcorp, ...alfabolivia].map((i) => ({ ...i }));
+
+  // tipo/operación de la búsqueda que los trajo — todos los items de este
+  // batch vienen de la misma categoría (los 6 fetch* reciben el mismo req),
+  // así que se puede asignar directo. Sin esto, la base de captadores
+  // (registrarCaptadores) no puede mostrarle a José Luis qué tipo de
+  // propiedad captó cada agente, solo título/zona/precio.
+  for (const i of items) {
+    i.tipo = req.tipo;
+    i.operacion = req.operacion === 'alquiler' ? 'alquiler' : 'venta';
+  }
 
   // Aviso de precio inconsistente: cuando el título/descripción del propio
   // aviso menciona un precio bien distinto al campo estructurado del portal
