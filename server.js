@@ -1051,36 +1051,36 @@ function paginaPortalCaptador(captador) {
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${nombre} — Portal de propiedades</title>
 <style>
-  :root { --bg:#0a0e1a; --panel:#141b2e; --panel-2:#1a2338; --panel-3:#202b45; --border:#263252; --text:#eef1f8; --muted:#8b95af;
-    --accent:#ea7c52; --accent-2:#b8582f; --accent-light:#ff9d75; --ok:#4ade80; --ok-soft:#10281c; }
+  :root { --bg:#f6f7fa; --panel:#ffffff; --panel-2:#ffffff; --panel-3:#eef1f6; --border:#dfe3ea; --text:#1a2233; --muted:#6b7488;
+    --accent:#ea7c52; --accent-2:#b8582f; --accent-light:#ff9d75; --ok:#16a34a; --ok-soft:#e7f8ee; }
   * { box-sizing:border-box }
   body { margin:0; font-family:-apple-system,'Segoe UI',system-ui,Roboto,sans-serif; color:var(--text);
-    background: radial-gradient(1100px 480px at 105% -12%, rgba(234,124,82,.12), transparent), radial-gradient(900px 420px at -8% 8%, rgba(45,212,191,.08), transparent), var(--bg); }
-  header { padding:44px 20px 28px; text-align:center; background:linear-gradient(180deg, rgba(234,124,82,.14), transparent); border-bottom:1px solid var(--border) }
+    background: radial-gradient(1100px 480px at 105% -12%, rgba(234,124,82,.10), transparent), radial-gradient(900px 420px at -8% 8%, rgba(13,148,136,.06), transparent), var(--bg); }
+  header { padding:44px 20px 28px; text-align:center; background:linear-gradient(180deg, rgba(234,124,82,.10), transparent); border-bottom:1px solid var(--border) }
   .avatar { width:76px; height:76px; border-radius:50%; margin:0 auto 14px; display:flex; align-items:center; justify-content:center;
-    background:linear-gradient(135deg, var(--accent-light), var(--accent) 60%, var(--accent-2)); color:#200d02; font-weight:800; font-size:26px; box-shadow:0 12px 32px -10px rgba(234,124,82,.55) }
+    background:linear-gradient(135deg, var(--accent-light), var(--accent) 60%, var(--accent-2)); color:#200d02; font-weight:800; font-size:26px; box-shadow:0 12px 32px -10px rgba(234,124,82,.45) }
   header h1 { margin:0 0 6px; font-size:22px; font-weight:800; letter-spacing:-.02em }
   header .sub { color:var(--muted); font-size:13px; margin:0 0 4px }
   .badge-fuente { display:inline-block; margin-top:8px; font-size:11px; font-weight:700; padding:3px 11px; border-radius:999px; background:var(--panel-3); color:var(--muted) }
   .cta-principal { display:inline-flex; align-items:center; gap:8px; margin-top:18px; background:linear-gradient(135deg,#25d366,#128c7e); color:#fff; font-weight:800;
-    text-decoration:none; padding:13px 26px; border-radius:999px; font-size:14.5px; box-shadow:0 10px 28px -10px rgba(37,211,102,.6) }
+    text-decoration:none; padding:13px 26px; border-radius:999px; font-size:14.5px; box-shadow:0 10px 28px -10px rgba(37,211,102,.45) }
   main { max-width:1080px; margin:0 auto; padding:28px 16px 60px }
   .contador { text-align:center; color:var(--muted); font-size:13px; margin-bottom:20px }
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:16px }
-  .card { background:linear-gradient(180deg,var(--panel-2),var(--panel)); border:1px solid var(--border); border-radius:16px; overflow:hidden;
-    box-shadow:0 12px 32px -16px rgba(0,0,0,.6); display:flex; flex-direction:column }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:16px; overflow:hidden;
+    box-shadow:0 12px 32px -20px rgba(15,23,42,.18); display:flex; flex-direction:column }
   .foto { width:100%; aspect-ratio:4/3; object-fit:cover; background:var(--panel-3) }
   .sin-foto { width:100%; aspect-ratio:4/3; background:var(--panel-3); display:flex; align-items:center; justify-content:center; font-size:34px }
   .cuerpo { padding:14px; display:flex; flex-direction:column; gap:7px }
   .fila-top { display:flex; justify-content:space-between; gap:8px; align-items:flex-start }
   .titulo { font-weight:800; font-size:14px; line-height:1.3 }
-  .precio { color:var(--accent-light); font-weight:800; font-size:14px; white-space:nowrap }
-  .badge-op { align-self:flex-start; font-size:10.5px; font-weight:700; padding:2px 9px; border-radius:999px; background:var(--ok-soft); color:#86efac; text-transform:uppercase }
+  .precio { color:var(--accent-2); font-weight:800; font-size:14px; white-space:nowrap }
+  .badge-op { align-self:flex-start; font-size:10.5px; font-weight:700; padding:2px 9px; border-radius:999px; background:var(--ok-soft); color:#15803d; text-transform:uppercase }
   .specs { color:var(--muted); font-size:12px; line-height:1.5 }
-  .cta-card { display:block; text-align:center; margin-top:6px; background:#1f3d3a; color:#2dd4bf; font-weight:700; font-size:12.5px; text-decoration:none; padding:9px; border-radius:8px }
-  .cta-card:hover { background:#2dd4bf; color:#0f1720 }
+  .cta-card { display:block; text-align:center; margin-top:6px; background:#e6f7f5; color:#0d9488; font-weight:700; font-size:12.5px; text-decoration:none; padding:9px; border-radius:8px }
+  .cta-card:hover { background:#0d9488; color:#fff }
   .vacio { text-align:center; color:var(--muted); padding:60px 20px }
-  footer { text-align:center; color:#5c6b7a; font-size:12px; padding:30px 16px }
+  footer { text-align:center; color:#98a0b3; font-size:12px; padding:30px 16px }
 </style></head>
 <body>
   <header>
@@ -2393,7 +2393,7 @@ function paginaRevisionAgente(registro, agente) {
   const nombreAgente = escapeHtml((agente && agente.nombre) || 'Agente');
   if (registro.estado && registro.estado !== 'pendiente') {
     return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Ya procesado</title><style>body{font-family:system-ui,sans-serif;background:#0f1720;color:#e8ecf1;text-align:center;padding:60px 20px}</style></head>
+    <title>Ya procesado</title><style>body{font-family:system-ui,sans-serif;background:#f6f7fa;color:#1a2233;text-align:center;padding:60px 20px}</style></head>
     <body><h2>Este envío ya fue ${registro.estado === 'aprobado' ? 'aprobado y mandado' : 'rechazado'}.</h2></body></html>`;
   }
   const filas = (registro.propiedades || [])
@@ -2415,29 +2415,29 @@ function paginaRevisionAgente(registro, agente) {
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Revisar antes de enviar — ${escapeHtml(registro.cliente || '')}</title>
 <style>
-  body{font-family:system-ui,-apple-system,sans-serif;background:#0f1720;color:#e8ecf1;margin:0;padding:0}
-  header{padding:20px;text-align:center;border-bottom:1px solid #1f2b38}
+  body{font-family:system-ui,-apple-system,sans-serif;background:#f6f7fa;color:#1a2233;margin:0;padding:0}
+  header{padding:20px;text-align:center;border-bottom:1px solid #eaecf1}
   header h1{margin:0 0 4px;font-size:18px}
-  header p{margin:0;color:#8b9bab;font-size:13px}
+  header p{margin:0;color:#6b7488;font-size:13px}
   main{max-width:600px;margin:0 auto;padding:16px}
-  .item{display:flex;gap:10px;background:#152230;border:1px solid #223244;border-radius:10px;padding:10px;margin-bottom:10px;align-items:flex-start;cursor:pointer}
+  .item{display:flex;gap:10px;background:#fff;border:1px solid #dfe3ea;border-radius:10px;padding:10px;margin-bottom:10px;align-items:flex-start;cursor:pointer;box-shadow:0 2px 8px -4px rgba(15,23,42,.08)}
   .item input{margin-top:6px;width:18px;height:18px;flex:none}
-  .item img{width:64px;height:64px;object-fit:cover;border-radius:8px;flex:none;background:#0f1720}
+  .item img{width:64px;height:64px;object-fit:cover;border-radius:8px;flex:none;background:#eef1f6}
   .detalle{display:flex;flex-direction:column;gap:2px;font-size:13px}
   .detalle strong{font-size:14px}
-  .detalle span{color:#8b9bab}
-  .captador{color:#e0a848 !important}
-  .detalle a{color:#2dd4bf;font-size:12px}
-  .botones{display:flex;gap:10px;margin-top:16px;position:sticky;bottom:0;background:#0f1720;padding:12px 0}
+  .detalle span{color:#6b7488}
+  .captador{color:#92600a !important}
+  .detalle a{color:#0d9488;font-size:12px}
+  .botones{display:flex;gap:10px;margin-top:16px;position:sticky;bottom:0;background:#f6f7fa;padding:12px 0}
   button{flex:1;padding:14px;border:none;border-radius:10px;font-weight:700;font-size:14px;cursor:pointer}
-  .aprobar{background:#2dd4bf;color:#0f1720}
-  .rechazar{background:#2a1a1a;color:#e8ecf1;border:1px solid #4a2a2a}
-  #estado{text-align:center;margin-top:12px;font-size:13px;color:#8b9bab}
+  .aprobar{background:#0d9488;color:#fff}
+  .rechazar{background:#fdeaea;color:#b91c1c;border:1px solid #f3b4b4}
+  #estado{text-align:center;margin-top:12px;font-size:13px;color:#6b7488}
 </style></head>
 <body>
   <header><h1>Revisar antes de enviar</h1><p>${escapeHtml(registro.cliente || '')} — ${escapeHtml(registro.tipo || '')}, ${escapeHtml(registro.zona || '')}</p></header>
   <main>
-    <p style="color:#8b9bab;font-size:13px">Desmarcá lo que no valga la pena mandar. Al aprobar, el cliente recibe SOLO lo que quede marcado.</p>
+    <p style="color:#6b7488;font-size:13px">Desmarcá lo que no valga la pena mandar. Al aprobar, el cliente recibe SOLO lo que quede marcado.</p>
     <div id="lista">${filas}</div>
     <div class="botones">
       <button class="rechazar" onclick="rechazar()">✕ No enviar nada</button>
@@ -2524,28 +2524,28 @@ function paginaPresentacionCliente(envio, agente) {
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Opciones para ${escapeHtml(envio.cliente || '')} — ${nombreAgente}</title>
 <style>
-  body{font-family:system-ui,-apple-system,sans-serif;background:#0f1720;color:#e8ecf1;margin:0;padding:0}
-  header{padding:24px 20px;text-align:center;border-bottom:1px solid #1f2b38}
+  body{font-family:system-ui,-apple-system,sans-serif;background:#f6f7fa;color:#1a2233;margin:0;padding:0}
+  header{padding:24px 20px;text-align:center;border-bottom:1px solid #eaecf1}
   header h1{margin:0 0 4px;font-size:20px}
-  header p{margin:0;color:#8b9bab;font-size:14px}
+  header p{margin:0;color:#6b7488;font-size:14px}
   main{max-width:960px;margin:0 auto;padding:24px 16px}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;margin:20px 0}
-  .card{background:#152230;border-radius:12px;overflow:hidden;border:1px solid #223244}
-  .galeria .principal{width:100%;height:170px;object-fit:cover;display:block;background:#0f1720}
+  .card{background:#fff;border-radius:12px;overflow:hidden;border:1px solid #dfe3ea;box-shadow:0 4px 16px -10px rgba(15,23,42,.12)}
+  .galeria .principal{width:100%;height:170px;object-fit:cover;display:block;background:#eef1f6}
   .miniaturas{display:flex;gap:4px;padding:4px;overflow-x:auto}
   .miniaturas img{width:48px;height:48px;object-fit:cover;border-radius:6px;cursor:pointer;flex:none;opacity:.75}
   .miniaturas img:hover{opacity:1}
-  .sin-foto{width:100%;height:170px;background:#1c2b3a;display:flex;align-items:center;justify-content:center;color:#5c6b7a;font-size:13px}
+  .sin-foto{width:100%;height:170px;background:#eef1f6;display:flex;align-items:center;justify-content:center;color:#98a0b3;font-size:13px}
   .info{padding:12px}
   .info h3{margin:0 0 6px;font-size:15px;line-height:1.3}
-  .precio{margin:0 0 4px;color:#2dd4bf;font-weight:700;font-size:16px}
-  .zona{margin:0 0 4px;color:#8b9bab;font-size:13px}
-  .caracteristicas{margin:0 0 6px;color:#c3ccd6;font-size:13px}
-  .descripcion{margin:0;color:#8b9bab;font-size:12px;line-height:1.4}
-  .cta{display:block;text-align:center;background:#2dd4bf;color:#0f1720;text-decoration:none;font-weight:700;padding:14px;border-radius:10px;margin-top:8px}
-  .cta-card{display:block;text-align:center;background:#1f3d3a;color:#2dd4bf;text-decoration:none;font-weight:600;padding:10px;border-radius:8px;margin-top:10px;font-size:13px}
-  .cta-card:hover{background:#2dd4bf;color:#0f1720}
-  footer{text-align:center;color:#5c6b7a;font-size:12px;padding:24px}
+  .precio{margin:0 0 4px;color:#0d9488;font-weight:700;font-size:16px}
+  .zona{margin:0 0 4px;color:#6b7488;font-size:13px}
+  .caracteristicas{margin:0 0 6px;color:#4b5568;font-size:13px}
+  .descripcion{margin:0;color:#6b7488;font-size:12px;line-height:1.4}
+  .cta{display:block;text-align:center;background:#0d9488;color:#fff;text-decoration:none;font-weight:700;padding:14px;border-radius:10px;margin-top:8px}
+  .cta-card{display:block;text-align:center;background:#e6f7f5;color:#0d9488;text-decoration:none;font-weight:600;padding:10px;border-radius:8px;margin-top:10px;font-size:13px}
+  .cta-card:hover{background:#0d9488;color:#fff}
+  footer{text-align:center;color:#98a0b3;font-size:12px;padding:24px}
 </style></head>
 <body>
   <header><h1>${nombreAgente}${inmobiliaria ? ' — ' + inmobiliaria : ''}</h1><p>Opciones para ${escapeHtml(envio.cliente || 'vos')}</p></header>
@@ -2609,27 +2609,27 @@ function paginaReporteZona(reporte, agente) {
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Opciones en ${escapeHtml(reporte.criterios?.zona || '')} — ${nombreAgente}</title>
 <style>
-  body{font-family:system-ui,-apple-system,sans-serif;background:#0f1720;color:#e8ecf1;margin:0;padding:0}
-  header{padding:24px 20px;text-align:center;border-bottom:1px solid #1f2b38}
+  body{font-family:system-ui,-apple-system,sans-serif;background:#f6f7fa;color:#1a2233;margin:0;padding:0}
+  header{padding:24px 20px;text-align:center;border-bottom:1px solid #eaecf1}
   header h1{margin:0 0 4px;font-size:20px}
-  header p{margin:0;color:#8b9bab;font-size:14px}
+  header p{margin:0;color:#6b7488;font-size:14px}
   .stats{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;padding:16px 20px 0}
-  .stat{background:#152230;border:1px solid #223244;border-radius:10px;padding:8px 14px;font-size:12.5px;color:#c3ccd6;text-align:center}
-  .stat strong{display:block;color:#2dd4bf;font-size:16px}
+  .stat{background:#fff;border:1px solid #dfe3ea;border-radius:10px;padding:8px 14px;font-size:12.5px;color:#4b5568;text-align:center}
+  .stat strong{display:block;color:#0d9488;font-size:16px}
   main{max-width:960px;margin:0 auto;padding:24px 16px}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;margin:20px 0}
-  .card{background:#152230;border-radius:12px;overflow:hidden;border:1px solid #223244}
-  .galeria .principal{width:100%;height:170px;object-fit:cover;display:block;background:#0f1720}
-  .sin-foto{width:100%;height:170px;background:#1c2b3a;display:flex;align-items:center;justify-content:center;color:#5c6b7a;font-size:13px}
+  .card{background:#fff;border-radius:12px;overflow:hidden;border:1px solid #dfe3ea;box-shadow:0 4px 16px -10px rgba(15,23,42,.12)}
+  .galeria .principal{width:100%;height:170px;object-fit:cover;display:block;background:#eef1f6}
+  .sin-foto{width:100%;height:170px;background:#eef1f6;display:flex;align-items:center;justify-content:center;color:#98a0b3;font-size:13px}
   .info{padding:12px}
   .info h3{margin:0 0 6px;font-size:15px;line-height:1.3}
-  .precio{margin:0 0 4px;color:#2dd4bf;font-weight:700;font-size:16px}
-  .zona{margin:0 0 4px;color:#8b9bab;font-size:13px}
-  .caracteristicas{margin:0 0 6px;color:#c3ccd6;font-size:13px}
-  .cta{display:block;text-align:center;background:#2dd4bf;color:#0f1720;text-decoration:none;font-weight:700;padding:14px;border-radius:10px;margin-top:8px}
-  .cta-card{display:block;text-align:center;background:#1f3d3a;color:#2dd4bf;text-decoration:none;font-weight:600;padding:10px;border-radius:8px;margin-top:10px;font-size:13px}
-  .cta-card:hover{background:#2dd4bf;color:#0f1720}
-  footer{text-align:center;color:#5c6b7a;font-size:12px;padding:24px}
+  .precio{margin:0 0 4px;color:#0d9488;font-weight:700;font-size:16px}
+  .zona{margin:0 0 4px;color:#6b7488;font-size:13px}
+  .caracteristicas{margin:0 0 6px;color:#4b5568;font-size:13px}
+  .cta{display:block;text-align:center;background:#0d9488;color:#fff;text-decoration:none;font-weight:700;padding:14px;border-radius:10px;margin-top:8px}
+  .cta-card{display:block;text-align:center;background:#e6f7f5;color:#0d9488;text-decoration:none;font-weight:600;padding:10px;border-radius:8px;margin-top:10px;font-size:13px}
+  .cta-card:hover{background:#0d9488;color:#fff}
+  footer{text-align:center;color:#98a0b3;font-size:12px;padding:24px}
 </style></head>
 <body>
   <header>

@@ -5,16 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Panel de administración — Buscador de Inmuebles</title>
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
-<meta name="theme-color" content="#0a0e1a">
+<meta name="theme-color" content="#f6f7fa">
 <style>
   :root {
-    --bg: #0a0e1a; --bg-elevated: #0f1524; --panel: #141b2e; --panel-2: #1a2338; --panel-3: #202b45;
-    --border: #263252; --border-soft: #1d2740; --text: #eef1f8; --muted: #8b95af; --muted-2: #5f6b89;
+    --bg: #f6f7fa; --bg-elevated: #ffffff; --panel: #ffffff; --panel-2: #ffffff; --panel-3: #eef1f6;
+    --border: #dfe3ea; --border-soft: #eaecf1; --text: #1a2233; --muted: #6b7488; --muted-2: #98a0b3;
     --accent: #ea7c52; --accent-2: #b8582f; --accent-light: #ff9d75; --accent-ink: #200d02;
-    --info: #2dd4bf; --info-2: #14b8a6; --ok: #4ade80; --ok-soft: #10281c;
-    --danger: #f36b6b; --danger-soft: #2c1414; --warn: #fbbf24; --warn-soft: #2e2306;
+    --info: #0d9488; --info-2: #0f766e; --ok: #16a34a; --ok-soft: #e7f8ee;
+    --danger: #dc2626; --danger-soft: #fdeaea; --warn: #d97706; --warn-soft: #fef3e2;
     --radius-lg: 20px; --radius: 16px; --radius-sm: 11px; --radius-xs: 8px;
-    --shadow: 0 12px 32px -12px rgba(0,0,0,.55);
+    --shadow: 0 12px 32px -14px rgba(15,23,42,.14);
     --font: -apple-system, 'Segoe UI', system-ui, Roboto, sans-serif;
   }
   * { box-sizing: border-box; }
@@ -60,7 +60,7 @@
 
   .stats { display: flex; gap: 20px; flex-wrap: wrap; }
   .stat { background: var(--panel-2); border-radius: var(--radius-sm); padding: 14px 18px; min-width: 120px; }
-  .stat .num { font-size: 26px; font-weight: 800; color: var(--accent-light); letter-spacing: -.01em; }
+  .stat .num { font-size: 26px; font-weight: 800; color: var(--accent-2); letter-spacing: -.01em; }
   .stat .lbl { font-size: 12px; color: var(--muted); margin-top: 2px; }
 
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -68,8 +68,8 @@
   td { padding: 10px; border-bottom: 1px solid var(--border-soft); }
   tr:last-child td { border-bottom: none; }
   .badge { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
-  .badge.activo { background: var(--ok-soft); color: #86efac; }
-  .badge.revocado { background: var(--danger-soft); color: #ffb4b4; }
+  .badge.activo { background: var(--ok-soft); color: #15803d; }
+  .badge.revocado { background: var(--danger-soft); color: #b91c1c; }
   .badge.nueva { background: var(--warn-soft); color: var(--warn); }
   .badge.origen { background: var(--panel-3); color: var(--muted); text-transform: capitalize; }
   .vacio { color: var(--muted); text-align: center; padding: 30px; font-size: 13px; }

@@ -6,16 +6,16 @@
 <title>Agentes del mercado — Buscador de Inmuebles</title>
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
-<meta name="theme-color" content="#0a0e1a">
+<meta name="theme-color" content="#f6f7fa">
 <style>
   :root {
-    --bg: #0a0e1a; --bg-elevated: #0f1524; --panel: #141b2e; --panel-2: #1a2338; --panel-3: #202b45;
-    --border: #263252; --border-soft: #1d2740; --text: #eef1f8; --muted: #8b95af; --muted-2: #5f6b89;
+    --bg: #f6f7fa; --bg-elevated: #ffffff; --panel: #ffffff; --panel-2: #ffffff; --panel-3: #eef1f6;
+    --border: #dfe3ea; --border-soft: #eaecf1; --text: #1a2233; --muted: #6b7488; --muted-2: #98a0b3;
     --accent: #ea7c52; --accent-2: #b8582f; --accent-light: #ff9d75; --accent-ink: #200d02;
-    --info: #2dd4bf; --info-2: #14b8a6; --ok: #4ade80; --ok-soft: #10281c;
-    --danger: #f36b6b; --danger-soft: #2c1414; --warn: #fbbf24; --warn-soft: #2e2306;
+    --info: #0d9488; --info-2: #0f766e; --ok: #16a34a; --ok-soft: #e7f8ee;
+    --danger: #dc2626; --danger-soft: #fdeaea; --warn: #d97706; --warn-soft: #fef3e2;
     --radius-lg: 20px; --radius: 16px; --radius-sm: 11px; --radius-xs: 8px;
-    --shadow: 0 12px 32px -12px rgba(0,0,0,.55);
+    --shadow: 0 12px 32px -14px rgba(15,23,42,.14);
     --font: -apple-system, 'Segoe UI', system-ui, Roboto, sans-serif;
   }
   * { box-sizing: border-box; }
@@ -70,7 +70,7 @@
   .item-agente { background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); padding: 14px 16px; margin-bottom: 10px; }
   .item-agente .fila1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .item-agente .nombre { font-weight: 800; font-size: 14.5px; }
-  .item-agente .oficina { color: var(--accent-light); font-size: 12.5px; font-weight: 600; }
+  .item-agente .oficina { color: var(--accent-2); font-size: 12.5px; font-weight: 600; }
   .item-agente .detalle { color: var(--muted); font-size: 12.5px; line-height: 1.6; margin: 6px 0; }
   .badge-fuente { font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--panel-3); color: var(--muted); margin-right: 4px; display: inline-block; }
   .item-agente .acciones { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
@@ -81,7 +81,7 @@
   .lista-props-agente { margin: 8px 0; display: grid; gap: 6px; }
   .prop-item-agente { display: flex; align-items: center; gap: 8px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 6px 8px; font-size: 12px; }
   .prop-item-agente .titulo-prop { flex: 1; color: var(--text); text-decoration: none; }
-  .prop-item-agente a.titulo-prop:hover { color: var(--accent-light); text-decoration: underline; }
+  .prop-item-agente a.titulo-prop:hover { color: var(--accent-2); text-decoration: underline; }
   .prop-item-agente .precio-prop { color: var(--info); font-weight: 700; white-space: nowrap; }
   .badge-tipo { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px; background: var(--panel-3); color: var(--muted-2); white-space: nowrap; }
 </style>
