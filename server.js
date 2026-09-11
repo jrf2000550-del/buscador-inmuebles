@@ -965,6 +965,39 @@ const ICONO_TIPO_PORTAL = {
   oficina: '🏢', edificio: '🏙️', deposito: '📦', rural: '🌾', rancho: '🐎', cochera: '🚗', hotel: '🏨', colegio: '🏫',
 };
 
+// José Luis lo reportó el 2026-09-11: la lista de propiedades de un captador
+// "se ve duplicada" — en realidad son lotes REALES distintos del mismo
+// proyecto (ej. "¡TERRENOS ECONÓMICOS EN COTOCA! Urbanización San Andrés I"
+// x18, cada uno con su propio código/link), pero con título casi idéntico
+// se ven como filas repetidas. Se agrupan solo para MOSTRAR (no se pierde
+// ningún dato: cada propiedad sigue guardada tal cual).
+function normalizarParaAgrupar(s) {
+  return quitarAcentos(s || '')
+    .replace(/[^a-zA-Z0-9\s]/g, ' ')
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => (w.length > 4 && w.endsWith('s') ? w.slice(0, -1) : w))
+    .join(' ');
+}
+
+function agruparPropiedades(props) {
+  const porClave = new Map();
+  const grupos = [];
+  for (const p of props) {
+    const clave = normalizarParaAgrupar(p.titulo) + '|' + normalizarParaAgrupar(p.zona);
+    let g = porClave.get(clave);
+    if (!g) {
+      g = { ...p, cantidad: 0 };
+      porClave.set(clave, g);
+      grupos.push(g);
+    }
+    g.cantidad++;
+    if (p.precio && !g.precio) g.precio = p.precio;
+  }
+  return grupos;
+}
+
 // Página pública del captador — server-rendered (no fetch a una API aparte)
 // para poder terminar el enriquecimiento de WhatsApp ANTES de responder, sin
 // una segunda vuelta cliente-servidor. Estética "premium" a propósito
@@ -987,7 +1020,7 @@ function paginaPortalCaptador(captador) {
   const waHref = telLimpio ? `https://wa.me/${telLimpio}?text=${encodeURIComponent(`Hola ${captador.captadorNombre || ''}! Vi tus propiedades y quiero consultar.`)}` : '';
   const props = captador.propiedades || [];
 
-  const tarjetas = props
+  const tarjetas = agruparPropiedades(props)
     .map((p) => {
       const foto = p.imagen
         ? `<img class="foto" src="${escapeHtml(p.imagen)}" alt="" loading="lazy">`
@@ -998,13 +1031,14 @@ function paginaPortalCaptador(captador) {
         p.m2Terreno ? `${p.m2Terreno} m² terreno` : '',
         p.m2Construccion ? `${p.m2Construccion} m² constr.` : '',
       ].filter(Boolean).join(' · ');
+      const tituloConCantidad = escapeHtml(p.titulo || '') + (p.cantidad > 1 ? ` (${p.cantidad} lotes/unidades)` : '');
       const msgProp = encodeURIComponent(`Hola ${captador.captadorNombre || ''}! Me interesa esta propiedad: "${p.titulo}" (US$ ${Number(p.precio || 0).toLocaleString('es-BO')}). ¿Seguís disponible?`);
       const ctaProp = telLimpio ? `<a class="cta-card" href="https://wa.me/${telLimpio}?text=${msgProp}">💬 Consultar por WhatsApp</a>` : '';
       return `
       <div class="card">
         ${foto}
         <div class="cuerpo">
-          <div class="fila-top"><span class="titulo">${escapeHtml(p.titulo || '')}</span><span class="precio">${p.precio ? 'US$ ' + Number(p.precio).toLocaleString('es-BO') : 'Consultar'}</span></div>
+          <div class="fila-top"><span class="titulo">${tituloConCantidad}</span><span class="precio">${p.precio ? 'US$ ' + Number(p.precio).toLocaleString('es-BO') : 'Consultar'}</span></div>
           ${p.operacion ? `<span class="badge-op">${escapeHtml(p.operacion)}</span>` : ''}
           <div class="specs">${escapeHtml(p.zona || '')}${specs ? '<br>' + escapeHtml(specs) : ''}</div>
           ${ctaProp}

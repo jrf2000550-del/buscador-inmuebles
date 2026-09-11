@@ -207,6 +207,41 @@ function renderStats() {
   $('#desgloseFuentes').textContent = desglose;
 }
 
+// Un mismo agente suele publicar muchos lotes de UN mismo proyecto con
+// título casi idéntico (ej. "¡TERRENOS ECONÓMICOS EN COTOCA! Urbanización
+// San Andrés I" x18, cada uno un lote distinto con su propio link) — son
+// avisos reales distintos, no un bug de duplicado, pero listados uno por
+// uno se ven como si el sistema estuviera repitiendo el mismo aviso. Se
+// agrupan visualmente por título+zona normalizado (sin acentos/mayúsculas/
+// plurales simples) para mostrar "(x18)" en vez de 18 filas idénticas.
+function normalizarParaAgrupar(s) {
+  return (s || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-zA-Z0-9\s]/g, ' ')
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => (w.length > 4 && w.endsWith('s') ? w.slice(0, -1) : w))
+    .join(' ');
+}
+
+function agruparPropiedades(props) {
+  const porClave = new Map();
+  const grupos = [];
+  for (const p of props) {
+    const clave = normalizarParaAgrupar(p.titulo) + '|' + normalizarParaAgrupar(p.zona);
+    let g = porClave.get(clave);
+    if (!g) {
+      g = { ...p, cantidad: 0 };
+      porClave.set(clave, g);
+      grupos.push(g);
+    }
+    g.cantidad++;
+    if (p.precio && !g.precio) g.precio = p.precio;
+  }
+  return grupos;
+}
+
 function tiempoDesde(fechaIso) {
   if (!fechaIso) return '';
   const dias = Math.floor((Date.now() - new Date(fechaIso).getTime()) / 86400000);
@@ -247,8 +282,8 @@ function renderLista() {
     const waEnviarPortal = a.captadorTelefono
       ? `https://wa.me/${a.captadorTelefono.replace(/[^\d]/g, '')}?text=${encodeURIComponent(`Hola ${a.captadorNombre || ''}! Te armamos un portal con las propiedades que vimos tuyas: ${urlPortal}`)}`
       : '';
-    const propsHtml = props.map((p) => {
-      const etiqueta = escapeHtml(p.titulo || '') + (p.zona ? ' — ' + escapeHtml(p.zona) : '');
+    const propsHtml = agruparPropiedades(props).map((p) => {
+      const etiqueta = escapeHtml(p.titulo || '') + (p.zona ? ' — ' + escapeHtml(p.zona) : '') + (p.cantidad > 1 ? ` (x${p.cantidad})` : '');
       const tituloHtml = p.link
         ? `<a class="titulo-prop" href="${escapeHtml(p.link)}" target="_blank" rel="noopener">${etiqueta}</a>`
         : `<span class="titulo-prop">${etiqueta}</span>`;
