@@ -135,6 +135,7 @@
 const $ = (s) => document.querySelector(s);
 let API_KEY = localStorage.getItem('buscadorApiKey') || '';
 let todosLosAgentes = [];
+let miAgenteId = '';
 
 async function apiFetch(url, opciones = {}) {
   const headers = { ...(opciones.headers || {}) };
@@ -154,6 +155,7 @@ async function iniciar() {
   try {
     const quien = await (await fetch('/api/whoami', { headers: { 'X-Api-Key': API_KEY } })).json();
     if (!quien.agente) return;
+    miAgenteId = quien.agente.id;
     $('#gate').style.display = 'none';
     $('#app').style.display = 'block';
     $('#sesionNombre').textContent = 'Sesión: ' + quien.agente.nombre;
@@ -223,6 +225,10 @@ function renderLista() {
   $('#listaAgentes').innerHTML = filtrados.map((a) => {
     const props = a.propiedades || [];
     const waHref = a.captadorTelefono ? `https://wa.me/${a.captadorTelefono.replace(/[^\d]/g, '')}` : '';
+    const urlPortal = `${location.origin}/portal-agente/${miAgenteId}/${a.id}`;
+    const waEnviarPortal = a.captadorTelefono
+      ? `https://wa.me/${a.captadorTelefono.replace(/[^\d]/g, '')}?text=${encodeURIComponent(`Hola ${a.captadorNombre || ''}! Te armamos un portal con las propiedades que vimos tuyas: ${urlPortal}`)}`
+      : '';
     const propsHtml = props.map((p) => {
       const etiqueta = escapeHtml(p.titulo || '') + (p.zona ? ' — ' + escapeHtml(p.zona) : '');
       const tituloHtml = p.link
@@ -250,6 +256,8 @@ function renderLista() {
       </div>
       <div class="acciones">
         ${waHref ? `<a href="${waHref}" target="_blank"><button type="button" class="chico">WhatsApp</button></a>` : ''}
+        <a href="${urlPortal}" target="_blank"><button type="button" class="chico fantasma">Ver portal 🌐</button></a>
+        ${waEnviarPortal ? `<a href="${waEnviarPortal}" target="_blank"><button type="button" class="chico fantasma">Enviarle su portal</button></a>` : ''}
       </div>
       ${props.length ? `<details class="propiedades-agente"><summary>Ver ${props.length} propiedad(es)</summary><div class="lista-props-agente">${propsHtml}</div></details>` : ''}
     </div>`;

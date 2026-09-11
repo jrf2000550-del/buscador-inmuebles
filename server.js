@@ -772,11 +772,21 @@ function archivoCaptadores(agenteId) {
 }
 
 function leerCaptadores(agenteId) {
+  let lista;
   try {
-    return JSON.parse(fs.readFileSync(archivoCaptadores(agenteId), 'utf8'));
+    lista = JSON.parse(fs.readFileSync(archivoCaptadores(agenteId), 'utf8'));
   } catch {
     return [];
   }
+  // Migración de captadores guardados antes de que existiera `id` (necesario
+  // para el link del portal público) — se les asigna uno y se persiste, así
+  // solo pasa una vez por archivo.
+  let faltaId = false;
+  for (const c of lista) {
+    if (!c.id) { c.id = crypto.randomBytes(6).toString('hex'); faltaId = true; }
+  }
+  if (faltaId) guardarCaptadores(agenteId, lista);
+  return lista;
 }
 
 function guardarCaptadores(agenteId, lista) {
@@ -806,7 +816,11 @@ function upsertCaptadorEnLista(lista, it) {
   if (!clave) return null;
   let captador = lista.find((c) => claveCaptador(c) === clave);
   if (!captador) {
-    captador = { ...datos, primeraVez: new Date().toISOString(), propiedades: [] };
+    // id propio (no la clave interna, que puede cambiar si mejoran los datos
+    // de contacto) — es lo que arma el link público del portal del captador
+    // (ver /portal-agente/ más abajo), así que tiene que ser estable para
+    // siempre una vez creado.
+    captador = { id: crypto.randomBytes(6).toString('hex'), ...datos, primeraVez: new Date().toISOString(), propiedades: [] };
     lista.unshift(captador);
   } else {
     // Se actualizan datos de contacto por si mejoraron (ej. antes solo nombre, ahora también teléfono).
@@ -816,7 +830,17 @@ function upsertCaptadorEnLista(lista, it) {
   }
   const yaTiene = captador.propiedades.some((p) => p.link === it.link);
   if (!yaTiene) {
-    captador.propiedades.unshift({ titulo: it.titulo, precio: it.precio, zona: it.zona, tipo: it.tipo || '', operacion: it.operacion || '', link: it.link || '', vistoEl: new Date().toISOString() });
+    // Snapshot rico (no solo título/precio) para que el portal público del
+    // captador (José Luis lo pidió el 2026-09-10: que cada captador tenga su
+    // propia página presentable, igual que la vitrina de un agente
+    // registrado) pueda mostrar tarjetas con foto y specs, no solo texto.
+    captador.propiedades.unshift({
+      titulo: it.titulo, precio: it.precio, zona: it.zona, tipo: it.tipo || '', operacion: it.operacion || '',
+      dormitorios: it.dormitorios || null, banos: it.banos || null,
+      m2Terreno: it.m2Terreno || null, m2Construccion: it.m2Construccion || null,
+      imagen: it.imagen || (Array.isArray(it.imagenes) && it.imagenes[0]) || '',
+      link: it.link || '', vistoEl: new Date().toISOString(),
+    });
     captador.propiedades = captador.propiedades.slice(0, 100);
   }
   captador.ultimaVez = new Date().toISOString();
@@ -845,6 +869,178 @@ function registrarCaptadores(agenteId, items) {
   const lista = leerCaptadores(agenteId);
   for (const it of items) upsertCaptadorEnLista(lista, it);
   guardarCaptadores(agenteId, lista.slice(0, 1000));
+}
+
+// ---------- Portal público del captador (enriquecimiento de WhatsApp) ----------
+// José Luis lo pidió el 2026-09-11: cada captador (agente de otra
+// inmobiliaria que aparece en los resultados) tiene que poder tener su
+// propio portal presentable, igual que la vitrina de un agente registrado —
+// pero SIN redirigir a quien lo abre al aviso original de otra plataforma:
+// el objetivo es poder escribirle DIRECTO por WhatsApp, no mandarlo afuera.
+// C21 y (ahora) Mobiliario App ya traen el WhatsApp en el propio listado/
+// sync (gratis, sin pedido extra). RE/MAX y BienInmuebles NO lo exponen en
+// el listado — solo en la página individual de CADA aviso — así que pedir
+// eso en cada búsqueda sería carísimo (cientos de pedidos extra). Se
+// resuelve on-demand: recién cuando alguien abre el portal de un captador
+// sin teléfono conocido, se pide UNA sola página de detalle (una de sus
+// propiedades ya vistas) y se cachea el resultado para siempre.
+async function enriquecerContactoRemax(link) {
+  try {
+    const html = await fetchTexto(link);
+    const m = html.match(/data-page="([^"]*)"/);
+    if (!m) return null;
+    const decodificado = m[1]
+      .replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+    const datos = JSON.parse(decodificado);
+    const user = datos?.props?.agent?.user;
+    if (!user) return null;
+    return { telefono: user.phone_number || '', email: user.email || '', nombre: user.name_to_show || '' };
+  } catch {
+    return null;
+  }
+}
+
+async function enriquecerContactoBienInmuebles(link) {
+  try {
+    const html = await fetchTexto(link);
+    const mTel = html.match(/wa\.me\/(\d{7,15})/) || html.match(/Tel[eé]fono<span>\(?\+?591\)?\s*(\d{6,8})/i);
+    const mNombre = html.match(/agent-sides_2_abs">\s*<a[^>]*><h4>([^<]+)<\/h4>/i);
+    const mEmail = html.match(/Correo<span>([^<]+)</i);
+    if (!mTel && !mNombre && !mEmail) return null;
+    return {
+      telefono: mTel ? mTel[1] : '',
+      nombre: mNombre ? mNombre[1].trim() : '',
+      email: mEmail ? mEmail[1].trim() : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+const ENRIQUECEDOR_POR_FUENTE = { 'RE/MAX': enriquecerContactoRemax, BienInmuebles: enriquecerContactoBienInmuebles };
+
+async function asegurarContactoCaptador(agenteId, captador) {
+  if (captador.captadorTelefono) return captador;
+  const enriquecer = ENRIQUECEDOR_POR_FUENTE[captador.fuente];
+  const prop = enriquecer && captador.propiedades.find((p) => p.link);
+  if (!prop) return captador;
+  const datos = await enriquecer(prop.link);
+  if (!datos || (!datos.telefono && !datos.email && !datos.nombre)) return captador;
+  if (datos.telefono) captador.captadorTelefono = datos.telefono;
+  if (datos.email && !captador.captadorEmail) captador.captadorEmail = datos.email;
+  if (datos.nombre && (!captador.captadorNombre || captador.captadorNombre === 'Sin nombre')) captador.captadorNombre = datos.nombre;
+  const lista = leerCaptadores(agenteId);
+  const idx = lista.findIndex((c) => c.id === captador.id);
+  if (idx !== -1) {
+    lista[idx] = { ...lista[idx], captadorTelefono: captador.captadorTelefono, captadorEmail: captador.captadorEmail, captadorNombre: captador.captadorNombre };
+    guardarCaptadores(agenteId, lista);
+  }
+  return captador;
+}
+
+const ICONO_TIPO_PORTAL = {
+  casa: '🏠', departamento: '🏢', terreno: '🏞️', 'terreno-comercial': '🏞️', quinta: '🌳', local: '🏬',
+  oficina: '🏢', edificio: '🏙️', deposito: '📦', rural: '🌾', rancho: '🐎', cochera: '🚗', hotel: '🏨', colegio: '🏫',
+};
+
+// Página pública del captador — server-rendered (no fetch a una API aparte)
+// para poder terminar el enriquecimiento de WhatsApp ANTES de responder, sin
+// una segunda vuelta cliente-servidor. Estética "premium" a propósito
+// (avatar con iniciales, franja superior en degradé, tarjetas con sombra) —
+// va a compartirse con agentes de OTRAS inmobiliarias, así que representa a
+// Sofymar IA de cara afuera, no es una pantalla interna de trabajo.
+function paginaPortalCaptador(captador) {
+  const nombre = escapeHtml(captador.captadorNombre || 'Agente inmobiliario');
+  const iniciales = escapeHtml(
+    (captador.captadorNombre || 'A I')
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((p) => p[0].toUpperCase())
+      .join('') || 'AI'
+  );
+  const oficina = escapeHtml(captador.captadorOficina || '');
+  const fuente = escapeHtml(captador.fuente || '');
+  const telLimpio = (captador.captadorTelefono || '').replace(/[^\d]/g, '');
+  const waHref = telLimpio ? `https://wa.me/${telLimpio}?text=${encodeURIComponent(`Hola ${captador.captadorNombre || ''}! Vi tus propiedades y quiero consultar.`)}` : '';
+  const props = captador.propiedades || [];
+
+  const tarjetas = props
+    .map((p) => {
+      const foto = p.imagen
+        ? `<img class="foto" src="${escapeHtml(p.imagen)}" alt="" loading="lazy">`
+        : `<div class="sin-foto">${ICONO_TIPO_PORTAL[p.tipo] || '🏠'}</div>`;
+      const specs = [
+        p.dormitorios ? `${p.dormitorios} dorm.` : '',
+        p.banos ? `${p.banos} baños` : '',
+        p.m2Terreno ? `${p.m2Terreno} m² terreno` : '',
+        p.m2Construccion ? `${p.m2Construccion} m² constr.` : '',
+      ].filter(Boolean).join(' · ');
+      const msgProp = encodeURIComponent(`Hola ${captador.captadorNombre || ''}! Me interesa esta propiedad: "${p.titulo}" (US$ ${Number(p.precio || 0).toLocaleString('es-BO')}). ¿Seguís disponible?`);
+      const ctaProp = telLimpio ? `<a class="cta-card" href="https://wa.me/${telLimpio}?text=${msgProp}">💬 Consultar por WhatsApp</a>` : '';
+      return `
+      <div class="card">
+        ${foto}
+        <div class="cuerpo">
+          <div class="fila-top"><span class="titulo">${escapeHtml(p.titulo || '')}</span><span class="precio">${p.precio ? 'US$ ' + Number(p.precio).toLocaleString('es-BO') : 'Consultar'}</span></div>
+          ${p.operacion ? `<span class="badge-op">${escapeHtml(p.operacion)}</span>` : ''}
+          <div class="specs">${escapeHtml(p.zona || '')}${specs ? '<br>' + escapeHtml(specs) : ''}</div>
+          ${ctaProp}
+        </div>
+      </div>`;
+    })
+    .join('');
+
+  return `<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${nombre} — Portal de propiedades</title>
+<style>
+  :root { --bg:#0a0e1a; --panel:#141b2e; --panel-2:#1a2338; --panel-3:#202b45; --border:#263252; --text:#eef1f8; --muted:#8b95af;
+    --accent:#ea7c52; --accent-2:#b8582f; --accent-light:#ff9d75; --ok:#4ade80; --ok-soft:#10281c; }
+  * { box-sizing:border-box }
+  body { margin:0; font-family:-apple-system,'Segoe UI',system-ui,Roboto,sans-serif; color:var(--text);
+    background: radial-gradient(1100px 480px at 105% -12%, rgba(234,124,82,.12), transparent), radial-gradient(900px 420px at -8% 8%, rgba(45,212,191,.08), transparent), var(--bg); }
+  header { padding:44px 20px 28px; text-align:center; background:linear-gradient(180deg, rgba(234,124,82,.14), transparent); border-bottom:1px solid var(--border) }
+  .avatar { width:76px; height:76px; border-radius:50%; margin:0 auto 14px; display:flex; align-items:center; justify-content:center;
+    background:linear-gradient(135deg, var(--accent-light), var(--accent) 60%, var(--accent-2)); color:#200d02; font-weight:800; font-size:26px; box-shadow:0 12px 32px -10px rgba(234,124,82,.55) }
+  header h1 { margin:0 0 6px; font-size:22px; font-weight:800; letter-spacing:-.02em }
+  header .sub { color:var(--muted); font-size:13px; margin:0 0 4px }
+  .badge-fuente { display:inline-block; margin-top:8px; font-size:11px; font-weight:700; padding:3px 11px; border-radius:999px; background:var(--panel-3); color:var(--muted) }
+  .cta-principal { display:inline-flex; align-items:center; gap:8px; margin-top:18px; background:linear-gradient(135deg,#25d366,#128c7e); color:#fff; font-weight:800;
+    text-decoration:none; padding:13px 26px; border-radius:999px; font-size:14.5px; box-shadow:0 10px 28px -10px rgba(37,211,102,.6) }
+  main { max-width:1080px; margin:0 auto; padding:28px 16px 60px }
+  .contador { text-align:center; color:var(--muted); font-size:13px; margin-bottom:20px }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:16px }
+  .card { background:linear-gradient(180deg,var(--panel-2),var(--panel)); border:1px solid var(--border); border-radius:16px; overflow:hidden;
+    box-shadow:0 12px 32px -16px rgba(0,0,0,.6); display:flex; flex-direction:column }
+  .foto { width:100%; aspect-ratio:4/3; object-fit:cover; background:var(--panel-3) }
+  .sin-foto { width:100%; aspect-ratio:4/3; background:var(--panel-3); display:flex; align-items:center; justify-content:center; font-size:34px }
+  .cuerpo { padding:14px; display:flex; flex-direction:column; gap:7px }
+  .fila-top { display:flex; justify-content:space-between; gap:8px; align-items:flex-start }
+  .titulo { font-weight:800; font-size:14px; line-height:1.3 }
+  .precio { color:var(--accent-light); font-weight:800; font-size:14px; white-space:nowrap }
+  .badge-op { align-self:flex-start; font-size:10.5px; font-weight:700; padding:2px 9px; border-radius:999px; background:var(--ok-soft); color:#86efac; text-transform:uppercase }
+  .specs { color:var(--muted); font-size:12px; line-height:1.5 }
+  .cta-card { display:block; text-align:center; margin-top:6px; background:#1f3d3a; color:#2dd4bf; font-weight:700; font-size:12.5px; text-decoration:none; padding:9px; border-radius:8px }
+  .cta-card:hover { background:#2dd4bf; color:#0f1720 }
+  .vacio { text-align:center; color:var(--muted); padding:60px 20px }
+  footer { text-align:center; color:#5c6b7a; font-size:12px; padding:30px 16px }
+</style></head>
+<body>
+  <header>
+    <div class="avatar">${iniciales}</div>
+    <h1>${nombre}</h1>
+    ${oficina ? `<p class="sub">${oficina}</p>` : ''}
+    <span class="badge-fuente">Visto en ${fuente}</span><br>
+    ${waHref ? `<a class="cta-principal" href="${waHref}">💬 Escribir por WhatsApp</a>` : ''}
+  </header>
+  <main>
+    <p class="contador">${props.length} propiedad(es) captada(s)</p>
+    ${props.length ? `<div class="grid">${tarjetas}</div>` : '<p class="vacio">Todavía no hay propiedades registradas de este agente.</p>'}
+  </main>
+  <footer>Portal generado automáticamente — Buscador de Inmuebles · Sofymar IA</footer>
+</body></html>`;
 }
 
 // ---------- Reportes de zona (mercado completo, para presentar a clientes) ----------
@@ -1594,7 +1790,7 @@ function categoriaDesdeBreadcrumb(breadcrumbJson) {
   return { operacion, tipo, categoriaTexto: cat };
 }
 
-function normalizarMobiliario(entidad, breadcrumbJson, url) {
+function normalizarMobiliario(entidad, breadcrumbJson, url, whatsapp) {
   const { operacion, tipo, categoriaTexto } = categoriaDesdeBreadcrumb(breadcrumbJson);
   if (!tipo) return null; // categoría no reconocida (ej. otro tipo de propiedad) — se descarta
   // Oficinas y locales (@type "Place") no traen floorSize en el schema.org de
@@ -1643,7 +1839,7 @@ function normalizarMobiliario(entidad, breadcrumbJson, url) {
     oficina: '',
     fecha: null, // no viene fecha de publicación en el schema
     asesor: '',
-    whatsapp: '',
+    whatsapp: whatsapp || '',
     telefono: '',
     email: '',
     ciudad: entidad.address?.addressLocality || '',
@@ -1682,7 +1878,12 @@ async function sincronizarUnaPropiedad(id) {
   // Solo Santa Cruz — el portal también cubre otras ciudades de Bolivia y
   // esta app está scopeada a Santa Cruz (mismo criterio que las otras 3 fuentes).
   if (!/santa cruz/i.test(entidad.address?.addressLocality || '')) return null;
-  return normalizarMobiliario(entidad, breadcrumb, url);
+  // El WhatsApp del captador viene embebido en el mismo HTML que ya se
+  // descarga acá (payload RSC de Next.js), así que se saca gratis — sin
+  // pedido extra por propiedad. José Luis lo pidió el 2026-09-11: quiere
+  // poder escribirle directo al captador en vez de solo linkear su aviso.
+  const mWhatsapp = html.match(/"whatsapp":"(\+?\d{7,15})"/);
+  return normalizarMobiliario(entidad, breadcrumb, url, mWhatsapp ? mWhatsapp[1] : '');
 }
 
 let sincronizandoMobiliario = false;
@@ -4350,6 +4551,24 @@ async function manejarRequest(req, res) {
     }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(paginaReporteZona(reporte, agenteRZ));
+  }
+
+  // Portal público de un captador (agente de otra fuente) — pensado para
+  // compartírselo a ÉL, no a un cliente, así que acá SÍ se muestra su propio
+  // contacto (es información que él mismo publicó). Sin login, protegido
+  // solo por el id del captador (6 bytes, no adivinable en la práctica).
+  const mPortalAgente = url.pathname.match(/^\/portal-agente\/([^/]+)\/([^/]+)$/);
+  if (mPortalAgente && req.method === 'GET') {
+    const [, agenteIdPA, captadorId] = mPortalAgente;
+    const listaPA = leerCaptadores(agenteIdPA);
+    const captadorPA = listaPA.find((c) => c.id === captadorId);
+    if (!captadorPA) {
+      res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end('<h1>No encontrado</h1>');
+    }
+    await asegurarContactoCaptador(agenteIdPA, captadorPA);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    return res.end(paginaPortalCaptador(captadorPA));
   }
 
   // Página de revisión del AGENTE — mismo criterio de link no adivinable,
