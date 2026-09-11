@@ -794,6 +794,27 @@ function guardarCaptadores(agenteId, lista) {
   fs.writeFileSync(archivoCaptadores(agenteId), JSON.stringify(lista, null, 2));
 }
 
+// Bug real reportado por José Luis el 2026-09-11: "no veo rastreo de Alfa
+// [Bolivia] y [CapitalC]orp" — SÍ se estaban registrando, pero un tope
+// global de 1000 captadores los dejaba afuera: Century 21 y RE/MAX tienen
+// cientos de agentes reales distintos (668 y 311 en la cuenta de José Luis)
+// que van llenando el tope antes de que un captador nuevo de una fuente
+// chica (Alfa Bolivia, CapitalCorp — decenas de agentes en total, no
+// cientos) llegue a entrar. El tope por FUENTE evita que una fuente grande
+// desplace a una chica, sin dejar crecer el archivo sin límite.
+const CAPTADORES_TOPE_POR_FUENTE = 800;
+function recortarCaptadoresPorFuente(lista) {
+  const contador = {};
+  const resultado = [];
+  for (const c of lista) {
+    const n = contador[c.fuente] || 0;
+    if (n >= CAPTADORES_TOPE_POR_FUENTE) continue;
+    contador[c.fuente] = n + 1;
+    resultado.push(c);
+  }
+  return resultado;
+}
+
 function claveCaptador(c) {
   return (c.captadorTelefono || c.captadorEmail || `${c.captadorNombre}|${c.fuente}` || '').toLowerCase().trim();
 }
@@ -857,7 +878,7 @@ function registrarCaptador(agenteId, it) {
   const lista = leerCaptadores(agenteId);
   const captador = upsertCaptadorEnLista(lista, it);
   if (!captador) return null;
-  guardarCaptadores(agenteId, lista.slice(0, 1000));
+  guardarCaptadores(agenteId, recortarCaptadoresPorFuente(lista));
   return captador;
 }
 
@@ -868,7 +889,7 @@ function registrarCaptadores(agenteId, items) {
   if (!items.length) return;
   const lista = leerCaptadores(agenteId);
   for (const it of items) upsertCaptadorEnLista(lista, it);
-  guardarCaptadores(agenteId, lista.slice(0, 1000));
+  guardarCaptadores(agenteId, recortarCaptadoresPorFuente(lista));
 }
 
 // ---------- Portal público del captador (enriquecimiento de WhatsApp) ----------

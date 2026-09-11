@@ -112,6 +112,7 @@
       <h2>📇 Base de agentes/inmobiliarias</h2>
       <p class="sub" style="margin-bottom:14px">Se arma sola: cada vez que buscás o generás un reporte de zona, los agentes/inmobiliarias que aparecen en los resultados quedan guardados acá, con todas las propiedades que les vimos.</p>
       <div class="stats-meta" id="statsAgentes"></div>
+      <p class="sub" id="desgloseFuentes" style="margin-top:10px"></p>
     </div>
 
     <div class="panel">
@@ -119,6 +120,9 @@
         <input type="text" id="filtroTexto" placeholder="Buscar por nombre, oficina o fuente...">
         <select id="filtroTipo">
           <option value="">Todos los tipos</option>
+        </select>
+        <select id="filtroFuente">
+          <option value="">Todas las fuentes</option>
         </select>
         <select id="ordenAgentes">
           <option value="cantidad">Más propiedades primero</option>
@@ -168,6 +172,7 @@ async function cargarAgentes() {
   todosLosAgentes = Array.isArray(data) ? data : [];
   renderStats();
   poblarFiltroTipo();
+  poblarFiltroFuente();
   renderLista();
 }
 
@@ -180,15 +185,26 @@ function poblarFiltroTipo() {
   $('#filtroTipo').value = actual;
 }
 
+function poblarFiltroFuente() {
+  const porFuente = {};
+  todosLosAgentes.forEach((a) => { if (a.fuente) porFuente[a.fuente] = (porFuente[a.fuente] || 0) + 1; });
+  const actual = $('#filtroFuente').value;
+  $('#filtroFuente').innerHTML = '<option value="">Todas las fuentes</option>' +
+    Object.keys(porFuente).sort().map((f) => `<option value="${escapeHtml(f)}">${escapeHtml(f)} (${porFuente[f]})</option>`).join('');
+  $('#filtroFuente').value = actual;
+}
+
 function renderStats() {
   const totalPropiedades = todosLosAgentes.reduce((acc, a) => acc + (a.propiedades || []).length, 0);
-  const fuentes = new Set();
-  todosLosAgentes.forEach((a) => { if (a.fuente) fuentes.add(a.fuente); });
+  const porFuente = {};
+  todosLosAgentes.forEach((a) => { if (a.fuente) porFuente[a.fuente] = (porFuente[a.fuente] || 0) + 1; });
+  const desglose = Object.entries(porFuente).sort((a, b) => b[1] - a[1]).map(([f, n]) => `${escapeHtml(f)}: ${n}`).join(' · ');
   $('#statsAgentes').innerHTML = `
     <div class="stat-meta"><div class="num">${todosLosAgentes.length}</div><div class="lbl">agentes/inmobiliarias</div></div>
     <div class="stat-meta"><div class="num">${totalPropiedades}</div><div class="lbl">propiedades vistas</div></div>
-    <div class="stat-meta"><div class="num">${fuentes.size}</div><div class="lbl">fuentes distintas</div></div>
+    <div class="stat-meta"><div class="num">${Object.keys(porFuente).length}</div><div class="lbl">fuentes distintas</div></div>
   `;
+  $('#desgloseFuentes').textContent = desglose;
 }
 
 function tiempoDesde(fechaIso) {
@@ -204,8 +220,10 @@ function tiempoDesde(fechaIso) {
 function renderLista() {
   const texto = $('#filtroTexto').value.trim().toLowerCase();
   const tipo = $('#filtroTipo').value;
+  const fuente = $('#filtroFuente').value;
   const orden = $('#ordenAgentes').value;
   let filtrados = todosLosAgentes.filter((a) => {
+    if (fuente && a.fuente !== fuente) return false;
     if (tipo && !(a.propiedades || []).some((p) => p.tipo === tipo)) return false;
     if (!texto) return true;
     const campo = `${a.captadorNombre || ''} ${a.captadorOficina || ''} ${a.fuente || ''}`.toLowerCase();
@@ -270,6 +288,7 @@ function escapeHtml(s) {
 
 $('#filtroTexto').addEventListener('input', renderLista);
 $('#filtroTipo').addEventListener('change', renderLista);
+$('#filtroFuente').addEventListener('change', renderLista);
 $('#ordenAgentes').addEventListener('change', renderLista);
 
 iniciar();
