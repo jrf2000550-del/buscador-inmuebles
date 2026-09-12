@@ -167,7 +167,6 @@ function registrarAgente({ nombre, email, password, inmobiliaria, oficina }) {
   nombre = String(nombre || '').trim();
   email = String(email || '').trim().toLowerCase();
   if (!nombre) throw new Error('Falta el nombre.');
-  if (!/\S+\s+\S+/.test(nombre)) throw new Error('Escribí tu nombre completo (nombre y apellido).');
   if (!emailValido(email)) throw new Error('El email no es válido.');
   if (!password || password.length < 6) throw new Error('La contraseña debe tener al menos 6 caracteres.');
 
@@ -1469,19 +1468,30 @@ function normalizarC21(r, operacion) {
   };
 }
 
+// C21 NO tiene categoría propia para "terreno comercial" — confirmado en vivo
+// el 2026-09-12 contra su propio listado de filtros (`GET .../en-estado_santa-cruz?json=true`
+// → filtros.tipo.validValues): solo existe "Terreno" genérico, sin distinción
+// residencial/comercial. José Luis reportó que hay bastante demanda de este
+// tipo y la app mostraba 0 de C21 — se estaba dejando afuera un pedazo real
+// del inventario (35 avisos reales confirmados que dicen "comercial" en el
+// título) solo porque C21 no tiene el filtro, no porque no existan. Se pide
+// la categoría genérica "terreno" y se filtra por título/encabezado.
+const REGEX_TERRENO_COMERCIAL = /comercial/i;
+
 async function fetchC21(req) {
+  const esTerrenoComercial = req.tipo === 'terreno-comercial';
+  const reqC21 = esTerrenoComercial ? { ...req, tipo: 'terreno' } : req;
   // Si el tipo pedido no tiene mapeo en C21_TIPO, NO se manda la búsqueda —
   // urlC21 omitiría el segmento de tipo en silencio y devolvería resultados
-  // de TODOS los tipos sin filtrar (bug real encontrado 2026-07-28 al
-  // agregar 'terreno-comercial', que no tiene categoría propia acá).
-  if (!C21_TIPO[req.tipo]) return [];
+  // de TODOS los tipos sin filtrar (bug real encontrado 2026-07-28).
+  if (!C21_TIPO[reqC21.tipo]) return [];
   // La primera página NO atrapa el error acá — si falla, buscarTodo debe
   // enterarse (para avisar "C21 no respondió" en vez de mostrar 0 en
   // silencio, como pasaba antes). Las páginas siguientes sí toleran fallos
   // individuales sin tirar toda la búsqueda.
-  const primera = await fetchJson(urlC21(req, 1));
+  const primera = await fetchJson(urlC21(reqC21, 1));
   if (!Array.isArray(primera.results)) throw new Error('Respuesta inesperada de Century 21');
-  const items = primera.results.map((r) => normalizarC21(r, req.operacion)).filter(Boolean);
+  let items = primera.results.map((r) => normalizarC21(r, reqC21.operacion)).filter(Boolean);
 
   // totalHits viene como string con puntos de miles ("1.350") — se limpia a número.
   const total = Number(String(primera.totalHits || '').replace(/\D/g, '')) || primera.results.length;
@@ -1490,11 +1500,12 @@ async function fetchC21(req) {
   if (totalPaginas > 1) {
     const paginas = [];
     for (let p = 2; p <= totalPaginas; p++) paginas.push(p);
-    const datas = await Promise.all(paginas.map((p) => fetchJson(urlC21(req, p)).catch(() => null)));
+    const datas = await Promise.all(paginas.map((p) => fetchJson(urlC21(reqC21, p)).catch(() => null)));
     for (const d of datas) {
-      if (d && Array.isArray(d.results)) items.push(...d.results.map((r) => normalizarC21(r, req.operacion)).filter(Boolean));
+      if (d && Array.isArray(d.results)) items.push(...d.results.map((r) => normalizarC21(r, reqC21.operacion)).filter(Boolean));
     }
   }
+  if (esTerrenoComercial) items = items.filter((i) => REGEX_TERRENO_COMERCIAL.test(i.titulo || ''));
   return items;
 }
 
