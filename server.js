@@ -4126,14 +4126,44 @@ const PROMPT_ZONA =
   'relativa a los anillos y avenidas principales, tipo de zona — residencial/comercial/en crecimiento, perfil ' +
   'típico de quien vive o invierte ahí, accesos y conectividad). Incorporá también, sin inventar nada extra, ' +
   'las estadísticas reales del inventario actual que te paso (cantidad de propiedades, rango de precio, precio ' +
-  'promedio por m² si viene). Reglas estrictas: NO inventes nombres puntuales de calles, colegios, centros ' +
-  'comerciales, condominios o proyectos si no estás genuinamente seguro de que existen ahí — quedate en ' +
-  'generalidades verificables. Si no tenés certeza sobre algo específico de esa zona, no lo menciones en vez ' +
-  'de arriesgar un dato falso. 2-3 párrafos cortos, español, tono profesional y cercano, sin emojis, texto ' +
-  'plano sin markdown ni títulos.';
+  'promedio por m² si viene). ' +
+  'Si te paso "Hechos confirmados de esta zona", esos datos son la ÚNICA verdad sobre ubicación/límites/anillos ' +
+  'para esta zona — tienen prioridad absoluta sobre cualquier otra cosa que creas saber, y NUNCA los podés ' +
+  'contradecir (ej. si te digo que una zona llega hasta cierto anillo, no digas un rango de anillos distinto). ' +
+  'Si NO te paso hechos confirmados para algo puntual (un anillo exacto, una avenida, un límite), no lo ' +
+  'inventes — quedate en una descripción más general en vez de arriesgar un límite exacto que podría estar mal. ' +
+  'Reglas estrictas: NO inventes nombres puntuales de calles, colegios, centros comerciales, condominios o ' +
+  'proyectos si no estás genuinamente seguro de que existen ahí. ' +
+  'Adaptá el enfoque del relato según el perfil de comprador que te indico: para "vivienda" priorizá tono de ' +
+  'vida cotidiana, familia, comodidad y accesos del día a día; para "inversión" priorizá plusvalía, rentabilidad ' +
+  'de alquiler/reventa y dinamismo del mercado de la zona; si no te indico perfil, cubrí ambos ángulos brevemente. ' +
+  '2-3 párrafos cortos, español, tono profesional y cercano, sin emojis, texto plano sin markdown ni títulos.';
 
-async function generarResumenZona(zona, criterios, resumen) {
-  const user = `Zona: ${zona}\nBúsqueda: ${criterios.operacion} de ${criterios.tipo}\nEstadísticas reales del inventario actual: ${JSON.stringify(resumen)}`;
+// Hechos verificados por José Luis que la IA NO puede contradecir — arranca
+// con lo mínimo confirmado (Equipetrol llega hasta el 4to anillo, corregido
+// el 2026-09-22 después de que la IA dijera "entre el primer y segundo
+// anillo" en un reporte real). Se va ampliando con el tiempo; la clave debe
+// coincidir con el texto de zona ya sin acentos/mayúsculas (ver
+// coincideHechoZona).
+const HECHOS_ZONA = {
+  equipetrol: ['Equipetrol se extiende desde el centro hasta el 4to anillo — no es solo entre el 1er y 2do anillo.'],
+};
+
+function coincideHechoZona(zona) {
+  const plano = quitarAcentos(String(zona || '').toLowerCase());
+  for (const clave of Object.keys(HECHOS_ZONA)) {
+    if (plano.includes(clave)) return HECHOS_ZONA[clave];
+  }
+  return null;
+}
+
+async function generarResumenZona(zona, criterios, resumen, perfilCliente) {
+  const hechos = coincideHechoZona(zona);
+  const user =
+    `Zona: ${zona}\nBúsqueda: ${criterios.operacion} de ${criterios.tipo}\n` +
+    `Perfil del comprador: ${perfilCliente || 'no especificado'}\n` +
+    `Estadísticas reales del inventario actual: ${JSON.stringify(resumen)}` +
+    (hechos ? `\nHechos confirmados de esta zona (prioridad absoluta): ${hechos.join(' ')}` : '');
   const proveedor = estadoIA().proveedor;
   return proveedor === 'gemini' ? await llamarGemini(PROMPT_ZONA, user, false) : await llamarClaude(PROMPT_ZONA, user, null);
 }
@@ -5705,17 +5735,18 @@ async function manejarRequest(req, res) {
       const porFuente = {};
       for (const it of propiedades) porFuente[it.fuente] = (porFuente[it.fuente] || 0) + 1;
 
+      const perfilCliente = ['vivienda', 'inversion'].includes(body.perfilCliente) ? body.perfilCliente : '';
       let resumenZonaIA = null;
       if (body.zona && iaDisponible()) {
         try {
-          resumenZonaIA = await generarResumenZona(body.zona, { tipo: body.tipo, operacion: body.operacion }, resumen);
+          resumenZonaIA = await generarResumenZona(body.zona, { tipo: body.tipo, operacion: body.operacion }, resumen, perfilCliente);
         } catch (e) {
           resumenZonaIA = null; // si la IA falla, el reporte se manda igual sin el resumen
         }
       }
 
       const registro = guardarReporteZona(agenteId, {
-        criterios: { tipo: body.tipo, operacion: body.operacion, zona: body.zona || '' },
+        criterios: { tipo: body.tipo, operacion: body.operacion, zona: body.zona || '', perfilCliente },
         tituloCliente: body.tituloCliente || '',
         resumen,
         resumenZonaIA,

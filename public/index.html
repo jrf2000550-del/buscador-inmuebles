@@ -698,6 +698,11 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>
       <span id="btnACMTxt">Generar ACM</span>
     </button>
+    <select id="perfilReporteZona" style="display:none; width:auto; padding:8px 10px; font-size:12.5px; margin-right:8px" title="Enfoque del resumen de zona (para adaptar el relato)">
+      <option value="">Vivienda + inversión</option>
+      <option value="vivienda">Enfoque vivienda</option>
+      <option value="inversion">Enfoque inversión</option>
+    </select>
     <button type="button" id="btnReporteZona" class="btn-icono" style="display:none">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
       <span id="btnReporteZonaTxt">Reporte de zona para cliente</span>
@@ -1154,6 +1159,7 @@ $('#btnReporteZona').addEventListener('click', async () => {
       body: JSON.stringify({
         tipo: r.tipo, operacion: r.operacion, zona: r.zona,
         tituloCliente: r.cliente,
+        perfilCliente: $('#perfilReporteZona').value,
         propiedades: ultimosListados,
       }),
     });
@@ -1421,6 +1427,7 @@ async function buscar(r) {
   $('#acmWrap').innerHTML = '';
   $('#manualesWrap').style.display = 'none';
   $('#btnReporteZona').style.display = 'none';
+  $('#perfilReporteZona').style.display = 'none';
   $('#reporteZonaWrap').style.display = 'none';
 
   const params = new URLSearchParams();
@@ -1489,6 +1496,7 @@ async function buscar(r) {
   $('#manualesWrap').style.display = hayAcm ? 'block' : 'none';
   if (hayAcm) renderListaManuales();
   $('#btnReporteZona').style.display = 'inline-flex';
+  $('#perfilReporteZona').style.display = 'inline-block';
 
   const enviadosActivos = (r.enviados || []).map((e) => e.link);
   $('#zona-resultados').innerHTML = nota + '<div class="grid">' + data.listados.map((i) => `
