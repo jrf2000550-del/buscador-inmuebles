@@ -2646,6 +2646,10 @@ function paginaReporteZona(reporte, agente) {
   .stat{background:#fff;border:1px solid #dfe3ea;border-radius:10px;padding:8px 14px;font-size:12.5px;color:#4b5568;text-align:center}
   .stat strong{display:block;color:#0d9488;font-size:16px}
   main{max-width:960px;margin:0 auto;padding:24px 16px}
+  .sobre-zona{background:#fff;border:1px solid #dfe3ea;border-radius:12px;padding:18px 20px;margin:20px 0 8px;box-shadow:0 4px 16px -10px rgba(15,23,42,.12)}
+  .sobre-zona h2{margin:0 0 8px;font-size:16px}
+  .sobre-zona p{margin:0 0 8px;color:#374158;font-size:13.5px;line-height:1.6}
+  .sobre-zona .nota-ia{display:block;margin-top:6px;color:#98a0b3;font-size:11px;font-style:italic}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;margin:20px 0}
   .card{background:#fff;border-radius:12px;overflow:hidden;border:1px solid #dfe3ea;box-shadow:0 4px 16px -10px rgba(15,23,42,.12)}
   .galeria{position:relative;cursor:pointer}
@@ -2684,6 +2688,11 @@ function paginaReporteZona(reporte, agente) {
     ${stats.precioM2Promedio != null ? `<div class="stat"><strong>US$ ${stats.precioM2Promedio}/m²</strong>promedio</div>` : ''}
   </div>` : ''}
   <main>
+    ${reporte.resumenZonaIA ? `<div class="sobre-zona">
+      <h2>Sobre ${escapeHtml(reporte.criterios?.zona || 'la zona')}</h2>
+      <p>${escapeHtml(reporte.resumenZonaIA).replace(/\n+/g, '</p><p>')}</p>
+      <span class="nota-ia">Resumen generado con IA a partir de conocimiento general de la zona — consultá con ${nombreAgente} para confirmar cualquier detalle puntual.</span>
+    </div>` : ''}
     <div class="grid">${tarjetas || '<p>No hay propiedades para mostrar.</p>'}</div>
     ${waHref ? `<a class="cta" href="${waHref}">Escribile a ${nombreAgente} por WhatsApp</a>` : ''}
   </main>
@@ -4097,6 +4106,36 @@ async function generarACM(req, stats) {
     // se muestra el texto crudo donde iría el comentario de comparables.
     return { rangoSugerido: null, comentarioComparables: text, recomendacionPractica: '', riesgoSiConfiabilidadBaja: '' };
   }
+}
+
+// Resumen de zona (ubicación, ventajas, perfil) para el reporte que se le
+// manda al cliente — José Luis lo pidió el 2026-09-22. No hay una base
+// verificada propia para las decenas de zonas puntuales que maneja la app
+// (solo 4 zonas grandes documentadas en el proyecto de mercado), así que
+// José Luis eligió a propósito usar el conocimiento general de la IA sobre
+// Santa Cruz de la Sierra en vez de esperar a cargar cada zona a mano —
+// asumiendo el riesgo de que salga algo genérico o impreciso. Por eso el
+// prompt le prohíbe inventar detalles puntuales verificables (calles,
+// colegios, centros comerciales) y el resultado se guarda marcado como
+// "generado con IA" en el reporte — José Luis lo revisa antes de mandar el
+// link, mismo criterio que el resto de los textos con IA de esta app.
+const PROMPT_ZONA =
+  'Sos un asesor inmobiliario experto en Santa Cruz de la Sierra, Bolivia. Te piden un resumen breve y bien ' +
+  'escrito de UNA zona/barrio puntual de la ciudad, para incluir en un reporte que un cliente real va a leer. ' +
+  'Usá tu conocimiento general de la geografía y el desarrollo urbano de Santa Cruz de la Sierra (ubicación ' +
+  'relativa a los anillos y avenidas principales, tipo de zona — residencial/comercial/en crecimiento, perfil ' +
+  'típico de quien vive o invierte ahí, accesos y conectividad). Incorporá también, sin inventar nada extra, ' +
+  'las estadísticas reales del inventario actual que te paso (cantidad de propiedades, rango de precio, precio ' +
+  'promedio por m² si viene). Reglas estrictas: NO inventes nombres puntuales de calles, colegios, centros ' +
+  'comerciales, condominios o proyectos si no estás genuinamente seguro de que existen ahí — quedate en ' +
+  'generalidades verificables. Si no tenés certeza sobre algo específico de esa zona, no lo menciones en vez ' +
+  'de arriesgar un dato falso. 2-3 párrafos cortos, español, tono profesional y cercano, sin emojis, texto ' +
+  'plano sin markdown ni títulos.';
+
+async function generarResumenZona(zona, criterios, resumen) {
+  const user = `Zona: ${zona}\nBúsqueda: ${criterios.operacion} de ${criterios.tipo}\nEstadísticas reales del inventario actual: ${JSON.stringify(resumen)}`;
+  const proveedor = estadoIA().proveedor;
+  return proveedor === 'gemini' ? await llamarGemini(PROMPT_ZONA, user, false) : await llamarClaude(PROMPT_ZONA, user, null);
 }
 
 // ---------- Capa de IA (opcional) ----------
@@ -5666,10 +5705,20 @@ async function manejarRequest(req, res) {
       const porFuente = {};
       for (const it of propiedades) porFuente[it.fuente] = (porFuente[it.fuente] || 0) + 1;
 
+      let resumenZonaIA = null;
+      if (body.zona && iaDisponible()) {
+        try {
+          resumenZonaIA = await generarResumenZona(body.zona, { tipo: body.tipo, operacion: body.operacion }, resumen);
+        } catch (e) {
+          resumenZonaIA = null; // si la IA falla, el reporte se manda igual sin el resumen
+        }
+      }
+
       const registro = guardarReporteZona(agenteId, {
         criterios: { tipo: body.tipo, operacion: body.operacion, zona: body.zona || '' },
         tituloCliente: body.tituloCliente || '',
         resumen,
+        resumenZonaIA,
         // Snapshot liviano — no todo el objeto de buscarTodo. asesor/oficina/
         // link quedan guardados acá para el propio José Luis (los ve si abre
         // el reporte desde su panel), pero paginaReporteZona nunca los
@@ -5695,6 +5744,7 @@ async function manejarRequest(req, res) {
         id: registro.id,
         urlPublica: `${urlBaseDesdeRequest(req)}/reporte/${agenteId}/${registro.id}`,
         resumen,
+        resumenZonaIA,
         porFuente,
       });
     } catch (e) {
