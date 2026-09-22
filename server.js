@@ -2594,13 +2594,17 @@ function paginaReporteZona(reporte, agente) {
   // reporte de zona puede traer cientos de propiedades, así que se abre bajo
   // demanda (al hacer clic) en vez de precargar miniaturas de todas.
   const galeriasFotos = [];
+  const galeriasWa = [];
   const tarjetas = (reporte.propiedades || [])
     .map((p) => {
+      const textoWa = encodeURIComponent(`Hola ${nombreAgente}! Vi en tu reporte de ${reporte.criterios?.zona || 'la zona'} esta propiedad: "${p.titulo}" (US$ ${Number(p.precio || 0).toLocaleString('es-BO')}). Quiero más info.`);
+      const hrefWaProp = waHref ? `${waHref}?text=${textoWa}` : '';
       const fotos = Array.isArray(p.imagenes) && p.imagenes.length ? p.imagenes : p.imagen ? [p.imagen] : [];
       let galeria;
       if (fotos.length) {
         const idxGaleria = galeriasFotos.length;
         galeriasFotos.push(fotos);
+        galeriasWa.push(hrefWaProp);
         galeria = `<div class="galeria" onclick="abrirGaleria(${idxGaleria})">
             <img class="principal" src="${escapeHtml(fotos[0])}" alt="" loading="lazy">
             ${fotos.length > 1 ? `<span class="contador-fotos">🖼️ ${fotos.length}</span>` : ''}
@@ -2616,8 +2620,7 @@ function paginaReporteZona(reporte, agente) {
       ]
         .filter(Boolean)
         .join(' · ');
-      const textoWa = encodeURIComponent(`Hola ${nombreAgente}! Vi en tu reporte de ${reporte.criterios?.zona || 'la zona'} esta propiedad: "${p.titulo}" (US$ ${Number(p.precio || 0).toLocaleString('es-BO')}). Quiero más info.`);
-      const botonCard = waHref ? `<a class="cta-card" href="${waHref}?text=${textoWa}">Consultar 📩</a>` : '';
+      const botonCard = hrefWaProp ? `<a class="cta-card" href="${hrefWaProp}">Consultar 📩</a>` : '';
       return `
       <div class="card">
         ${galeria}
@@ -2666,7 +2669,8 @@ function paginaReporteZona(reporte, agente) {
   .lb-prev{left:14px}
   .lb-next{right:14px}
   .lb-contador{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);color:#fff;font-size:13px;background:rgba(255,255,255,.14);padding:4px 12px;border-radius:999px}
-  @media (max-width:560px){.lb-prev,.lb-next{width:38px;height:38px;font-size:18px}}
+  .lb-wa{position:absolute;top:16px;left:20px;display:inline-flex;align-items:center;gap:6px;background:linear-gradient(135deg,#25d366,#128c7e);color:#fff;font-weight:700;font-size:13px;text-decoration:none;padding:9px 16px;border-radius:999px}
+  @media (max-width:560px){.lb-prev,.lb-next{width:38px;height:38px;font-size:18px}.lb-wa{top:auto;bottom:60px;left:50%;transform:translateX(-50%);font-size:12.5px;padding:8px 14px}}
 </style></head>
 <body>
   <header>
@@ -2691,13 +2695,18 @@ function paginaReporteZona(reporte, agente) {
     <img id="lbImg" src="" alt="">
     <button class="lb-next" onclick="cambiarFoto(1)">›</button>
     <div class="lb-contador" id="lbContador"></div>
+    <a class="lb-wa" id="lbWa" href="#" target="_blank">💬 Consultar por WhatsApp</a>
   </div>
   <script>
     const GALERIAS = ${JSON.stringify(galeriasFotos).replace(/<\/script/gi, '<\\/script')};
+    const GALERIAS_WA = ${JSON.stringify(galeriasWa).replace(/<\/script/gi, '<\\/script')};
     let galeriaActual = -1, fotoActual = 0;
     function abrirGaleria(i) {
       galeriaActual = i; fotoActual = 0;
       document.getElementById('lightbox').classList.add('abierto');
+      const wa = document.getElementById('lbWa');
+      if (GALERIAS_WA[i]) { wa.href = GALERIAS_WA[i]; wa.style.display = 'inline-flex'; }
+      else { wa.style.display = 'none'; }
       mostrarFotoActual();
     }
     function mostrarFotoActual() {
