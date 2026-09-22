@@ -2587,12 +2587,27 @@ function paginaReporteZona(reporte, agente) {
     .filter(Boolean)
     .join(' ');
   const stats = reporte.resumen;
+  // Fotos navegables una por una — José Luis lo pidió el 2026-09-22: antes
+  // cada tarjeta mostraba UNA sola foto fija, sin forma de ver el resto. Se
+  // arma un lightbox liviano (sin librerías) con las fotos de TODAS las
+  // propiedades del reporte guardadas en un array global por índice — un
+  // reporte de zona puede traer cientos de propiedades, así que se abre bajo
+  // demanda (al hacer clic) en vez de precargar miniaturas de todas.
+  const galeriasFotos = [];
   const tarjetas = (reporte.propiedades || [])
     .map((p) => {
       const fotos = Array.isArray(p.imagenes) && p.imagenes.length ? p.imagenes : p.imagen ? [p.imagen] : [];
-      const galeria = fotos.length
-        ? `<div class="galeria"><img class="principal" src="${escapeHtml(fotos[0])}" alt="" loading="lazy"></div>`
-        : '<div class="sin-foto">Sin foto</div>';
+      let galeria;
+      if (fotos.length) {
+        const idxGaleria = galeriasFotos.length;
+        galeriasFotos.push(fotos);
+        galeria = `<div class="galeria" onclick="abrirGaleria(${idxGaleria})">
+            <img class="principal" src="${escapeHtml(fotos[0])}" alt="" loading="lazy">
+            ${fotos.length > 1 ? `<span class="contador-fotos">🖼️ ${fotos.length}</span>` : ''}
+          </div>`;
+      } else {
+        galeria = '<div class="sin-foto">Sin foto</div>';
+      }
       const caracteristicas = [
         p.dormitorios ? `${p.dormitorios} dorm.` : '',
         p.banos ? `${p.banos} baños` : '',
@@ -2630,7 +2645,9 @@ function paginaReporteZona(reporte, agente) {
   main{max-width:960px;margin:0 auto;padding:24px 16px}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;margin:20px 0}
   .card{background:#fff;border-radius:12px;overflow:hidden;border:1px solid #dfe3ea;box-shadow:0 4px 16px -10px rgba(15,23,42,.12)}
+  .galeria{position:relative;cursor:pointer}
   .galeria .principal{width:100%;height:170px;object-fit:cover;display:block;background:#eef1f6}
+  .contador-fotos{position:absolute;bottom:8px;right:8px;background:rgba(15,23,42,.72);color:#fff;font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:999px}
   .sin-foto{width:100%;height:170px;background:#eef1f6;display:flex;align-items:center;justify-content:center;color:#98a0b3;font-size:13px}
   .info{padding:12px}
   .info h3{margin:0 0 6px;font-size:15px;line-height:1.3}
@@ -2641,6 +2658,15 @@ function paginaReporteZona(reporte, agente) {
   .cta-card{display:block;text-align:center;background:#e6f7f5;color:#0d9488;text-decoration:none;font-weight:600;padding:10px;border-radius:8px;margin-top:10px;font-size:13px}
   .cta-card:hover{background:#0d9488;color:#fff}
   footer{text-align:center;color:#98a0b3;font-size:12px;padding:24px}
+  .lightbox{display:none;position:fixed;inset:0;z-index:100;background:rgba(10,14,26,.92);align-items:center;justify-content:center}
+  .lightbox.abierto{display:flex}
+  .lightbox img{max-width:90vw;max-height:82vh;object-fit:contain;border-radius:6px}
+  .lb-cerrar{position:absolute;top:16px;right:20px;background:rgba(255,255,255,.12);color:#fff;border:0;width:38px;height:38px;border-radius:50%;font-size:18px;cursor:pointer}
+  .lb-prev,.lb-next{position:absolute;top:50%;transform:translateY(-50%);background:rgba(255,255,255,.12);color:#fff;border:0;width:46px;height:46px;border-radius:50%;font-size:22px;cursor:pointer}
+  .lb-prev{left:14px}
+  .lb-next{right:14px}
+  .lb-contador{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);color:#fff;font-size:13px;background:rgba(255,255,255,.14);padding:4px 12px;border-radius:999px}
+  @media (max-width:560px){.lb-prev,.lb-next{width:38px;height:38px;font-size:18px}}
 </style></head>
 <body>
   <header>
@@ -2658,6 +2684,42 @@ function paginaReporteZona(reporte, agente) {
     ${waHref ? `<a class="cta" href="${waHref}">Escribile a ${nombreAgente} por WhatsApp</a>` : ''}
   </main>
   <footer>Buscador de Inmuebles — Sofymar IA</footer>
+
+  <div class="lightbox" id="lightbox" onclick="if(event.target.id==='lightbox')cerrarGaleria()">
+    <button class="lb-cerrar" onclick="cerrarGaleria()">✕</button>
+    <button class="lb-prev" onclick="cambiarFoto(-1)">‹</button>
+    <img id="lbImg" src="" alt="">
+    <button class="lb-next" onclick="cambiarFoto(1)">›</button>
+    <div class="lb-contador" id="lbContador"></div>
+  </div>
+  <script>
+    const GALERIAS = ${JSON.stringify(galeriasFotos).replace(/<\/script/gi, '<\\/script')};
+    let galeriaActual = -1, fotoActual = 0;
+    function abrirGaleria(i) {
+      galeriaActual = i; fotoActual = 0;
+      document.getElementById('lightbox').classList.add('abierto');
+      mostrarFotoActual();
+    }
+    function mostrarFotoActual() {
+      const fotos = GALERIAS[galeriaActual];
+      document.getElementById('lbImg').src = fotos[fotoActual];
+      document.getElementById('lbContador').textContent = (fotoActual + 1) + ' / ' + fotos.length;
+    }
+    function cambiarFoto(delta) {
+      const fotos = GALERIAS[galeriaActual];
+      fotoActual = (fotoActual + delta + fotos.length) % fotos.length;
+      mostrarFotoActual();
+    }
+    function cerrarGaleria() {
+      document.getElementById('lightbox').classList.remove('abierto');
+    }
+    document.addEventListener('keydown', (e) => {
+      if (!document.getElementById('lightbox').classList.contains('abierto')) return;
+      if (e.key === 'ArrowRight') cambiarFoto(1);
+      else if (e.key === 'ArrowLeft') cambiarFoto(-1);
+      else if (e.key === 'Escape') cerrarGaleria();
+    });
+  </script>
 </body></html>`;
 }
 
