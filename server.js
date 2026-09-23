@@ -2587,6 +2587,16 @@ function paginaReporteZona(reporte, agente) {
     .filter(Boolean)
     .join(' ');
   const stats = reporte.resumen;
+  // Mapa de ubicación — José Luis pidió el 2026-09-22 que el cliente pueda
+  // ver dónde está cada propiedad y qué hay alrededor. Se usa el mismo mapa
+  // base (Leaflet + tiles de OpenStreetMap, sin key) que ya usa el buscador
+  // interno para resultados/comparables — el propio mapa de OSM ya muestra
+  // calles, avenidas y puntos de interés reales, no hace falta armar una
+  // capa de "qué hay cerca" aparte. Solo se listan las propiedades que
+  // vienen con lat/lon real (no todas las fuentes lo traen).
+  const puntosMapa = (reporte.propiedades || [])
+    .filter((p) => p.lat && p.lon)
+    .map((p) => ({ lat: p.lat, lon: p.lon, titulo: p.titulo, precio: p.precio }));
   // Fotos navegables una por una — José Luis lo pidió el 2026-09-22: antes
   // cada tarjeta mostraba UNA sola foto fija, sin forma de ver el resto. Se
   // arma un lightbox liviano (sin librerías) con las fotos de TODAS las
@@ -2637,6 +2647,7 @@ function paginaReporteZona(reporte, agente) {
   return `<!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Opciones en ${escapeHtml(reporte.criterios?.zona || '')} — ${nombreAgente}</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
 <style>
   body{font-family:system-ui,-apple-system,sans-serif;background:#f6f7fa;color:#1a2233;margin:0;padding:0}
   header{padding:24px 20px;text-align:center;border-bottom:1px solid #eaecf1}
@@ -2650,6 +2661,8 @@ function paginaReporteZona(reporte, agente) {
   .sobre-zona h2{margin:0 0 8px;font-size:16px}
   .sobre-zona p{margin:0 0 8px;color:#374158;font-size:13.5px;line-height:1.6}
   .sobre-zona .nota-ia{display:block;margin-top:6px;color:#98a0b3;font-size:11px;font-style:italic}
+  #mapaReporte{height:360px;border-radius:12px;margin:16px 0 6px;border:1px solid #dfe3ea;box-shadow:0 4px 16px -10px rgba(15,23,42,.12)}
+  .mapa-info{color:#98a0b3;font-size:11.5px;margin:0 0 16px}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;margin:20px 0}
   .card{background:#fff;border-radius:12px;overflow:hidden;border:1px solid #dfe3ea;box-shadow:0 4px 16px -10px rgba(15,23,42,.12)}
   .galeria{position:relative;cursor:pointer}
@@ -2693,6 +2706,8 @@ function paginaReporteZona(reporte, agente) {
       <p>${escapeHtml(reporte.resumenZonaIA).replace(/\n+/g, '</p><p>')}</p>
       <span class="nota-ia">Resumen generado con IA a partir de conocimiento general de la zona — consultá con ${nombreAgente} para confirmar cualquier detalle puntual.</span>
     </div>` : ''}
+    ${puntosMapa.length ? `<div id="mapaReporte"></div>
+    <p class="mapa-info">📍 ${puntosMapa.length} de ${(reporte.propiedades || []).length} propiedad(es) con ubicación exacta en el mapa — mové y acercá para ver qué hay alrededor.</p>` : ''}
     <div class="grid">${tarjetas || '<p>No hay propiedades para mostrar.</p>'}</div>
     ${waHref ? `<a class="cta" href="${waHref}">Escribile a ${nombreAgente} por WhatsApp</a>` : ''}
   </main>
@@ -2738,6 +2753,23 @@ function paginaReporteZona(reporte, agente) {
       else if (e.key === 'Escape') cerrarGaleria();
     });
   </script>
+  ${puntosMapa.length ? `<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script>
+    const PUNTOS_MAPA = ${JSON.stringify(puntosMapa).replace(/<\/script/gi, '<\\/script')};
+    const mapaReporte = L.map('mapaReporte').setView([PUNTOS_MAPA[0].lat, PUNTOS_MAPA[0].lon], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>',
+      maxZoom: 19,
+    }).addTo(mapaReporte);
+    const escHtmlMapa = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const boundsMapa = [];
+    for (const p of PUNTOS_MAPA) {
+      L.marker([p.lat, p.lon]).addTo(mapaReporte)
+        .bindPopup('<strong>' + (p.precio ? 'US$ ' + Number(p.precio).toLocaleString('es-BO') : 'Consultar precio') + '</strong><br>' + escHtmlMapa(p.titulo));
+      boundsMapa.push([p.lat, p.lon]);
+    }
+    if (boundsMapa.length > 1) mapaReporte.fitBounds(boundsMapa, { padding: [30, 30] });
+  </script>` : ''}
 </body></html>`;
 }
 
@@ -4563,9 +4595,32 @@ async function preguntarRedConIA(pregunta, matches) {
 
 // ---------- Links directos (portales sin lectura automática) ----------
 
+// Texto natural en español para cada tipo — José Luis reportó el 2026-09-22
+// que los links a Facebook/Google no ponían "exactamente lo que busco":
+// antes se mandaba el slug interno tal cual (ej. "terreno-comercial",
+// "deposito" sin tilde) en vez de una frase real de búsqueda, y encima nunca
+// se incluían las palabras clave del requerimiento (ej. "amoblado",
+// "piscina") — que suelen ser lo más específico de lo que el agente busca.
+const NOMBRE_TIPO_BUSQUEDA = {
+  casa: 'casa', departamento: 'departamento', terreno: 'terreno', 'terreno-comercial': 'terreno comercial',
+  quinta: 'quinta', local: 'local comercial', oficina: 'oficina', edificio: 'edificio', deposito: 'depósito',
+  tinglado: 'tinglado', rural: 'terreno rural', rancho: 'rancho', agricolas: 'propiedad agrícola',
+  ganaderas: 'propiedad ganadera', cochera: 'cochera', hotel: 'hotel', colegio: 'colegio', proyecto: 'proyecto en preventa',
+};
+
 function linksExternos(req) {
-  const q = [req.tipo, req.zona, 'santa cruz'].filter(Boolean).join(' ');
+  const tipoTexto = NOMBRE_TIPO_BUSQUEDA[req.tipo] || req.tipo || '';
   const opTxt = req.operacion === 'alquiler' ? 'alquiler' : 'venta';
+  // Las palabras clave del requerimiento (ej. "amoblado, piscina") son
+  // literalmente lo más puntual que el agente está buscando — sin esto, el
+  // link externo buscaba algo mucho más genérico de lo que hacía falta.
+  const palabrasClave = (req.palabras || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(' ');
+  const q = [tipoTexto, opTxt, req.zona, palabrasClave, 'santa cruz'].filter(Boolean).join(' ');
+  const qMarketplace = [tipoTexto, opTxt, req.zona, palabrasClave].filter(Boolean).join(' ');
   return [
     {
       nombre: 'Bolivia Inmuebles',
@@ -4585,7 +4640,7 @@ function linksExternos(req) {
       nombre: 'Facebook Marketplace',
       url:
         'https://www.facebook.com/marketplace/santacruzdelasierra/search?query=' +
-        encodeURIComponent([req.tipo, opTxt, req.zona].filter(Boolean).join(' ')),
+        encodeURIComponent(qMarketplace),
     },
     {
       nombre: 'Grupos de Facebook',
@@ -4595,7 +4650,7 @@ function linksExternos(req) {
       nombre: 'Google (todos los portales)',
       url:
         'https://www.google.com/search?q=' +
-        encodeURIComponent(`${req.tipo} en ${opTxt} ${req.zona || ''} santa cruz bolivia`),
+        encodeURIComponent(`${tipoTexto} en ${opTxt} ${req.zona || ''} ${palabrasClave} santa cruz bolivia`.replace(/\s+/g, ' ').trim()),
     },
   ];
 }
@@ -5777,6 +5832,8 @@ async function manejarRequest(req, res) {
           link: it.link || '',
           asesor: it.asesor || '',
           oficina: it.oficina || '',
+          lat: it.lat ?? null,
+          lon: it.lon ?? null,
         })),
       });
 
