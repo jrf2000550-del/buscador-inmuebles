@@ -4137,6 +4137,11 @@ const PROMPT_ZONA =
   'Adaptá el enfoque del relato según el perfil de comprador que te indico: para "vivienda" priorizá tono de ' +
   'vida cotidiana, familia, comodidad y accesos del día a día; para "inversión" priorizá plusvalía, rentabilidad ' +
   'de alquiler/reventa y dinamismo del mercado de la zona; si no te indico perfil, cubrí ambos ángulos brevemente. ' +
+  'Si te paso "Prioridades puntuales de este cliente" (ej. cerca de colegios, seguridad, vida nocturna, ' +
+  'transporte), dedicá al menos una parte del texto a esas prioridades específicas — pero con la MISMA regla de ' +
+  'no inventar: si no tenés certeza de un dato concreto sobre esa prioridad en esa zona (ej. el nombre de un ' +
+  'colegio puntual), hablá en términos generales y honestos (ej. "es una zona con buena oferta de servicios ' +
+  'educativos" en vez de nombrar un colegio que no confirmaste que existe ahí). ' +
   '2-3 párrafos cortos, español, tono profesional y cercano, sin emojis, texto plano sin markdown ni títulos.';
 
 // Hechos verificados por José Luis que la IA NO puede contradecir — arranca
@@ -4157,13 +4162,14 @@ function coincideHechoZona(zona) {
   return null;
 }
 
-async function generarResumenZona(zona, criterios, resumen, perfilCliente) {
+async function generarResumenZona(zona, criterios, resumen, perfilCliente, prioridadesCliente) {
   const hechos = coincideHechoZona(zona);
   const user =
     `Zona: ${zona}\nBúsqueda: ${criterios.operacion} de ${criterios.tipo}\n` +
     `Perfil del comprador: ${perfilCliente || 'no especificado'}\n` +
     `Estadísticas reales del inventario actual: ${JSON.stringify(resumen)}` +
-    (hechos ? `\nHechos confirmados de esta zona (prioridad absoluta): ${hechos.join(' ')}` : '');
+    (hechos ? `\nHechos confirmados de esta zona (prioridad absoluta): ${hechos.join(' ')}` : '') +
+    (prioridadesCliente ? `\nPrioridades puntuales de este cliente: ${prioridadesCliente}` : '');
   const proveedor = estadoIA().proveedor;
   return proveedor === 'gemini' ? await llamarGemini(PROMPT_ZONA, user, false) : await llamarClaude(PROMPT_ZONA, user, null);
 }
@@ -5736,17 +5742,20 @@ async function manejarRequest(req, res) {
       for (const it of propiedades) porFuente[it.fuente] = (porFuente[it.fuente] || 0) + 1;
 
       const perfilCliente = ['vivienda', 'inversion'].includes(body.perfilCliente) ? body.perfilCliente : '';
+      // Tope de longitud — es texto libre que un agente escribe a mano y
+      // termina dentro de un prompt, no hace falta más que un par de frases.
+      const prioridadesCliente = String(body.prioridadesCliente || '').trim().slice(0, 300);
       let resumenZonaIA = null;
       if (body.zona && iaDisponible()) {
         try {
-          resumenZonaIA = await generarResumenZona(body.zona, { tipo: body.tipo, operacion: body.operacion }, resumen, perfilCliente);
+          resumenZonaIA = await generarResumenZona(body.zona, { tipo: body.tipo, operacion: body.operacion }, resumen, perfilCliente, prioridadesCliente);
         } catch (e) {
           resumenZonaIA = null; // si la IA falla, el reporte se manda igual sin el resumen
         }
       }
 
       const registro = guardarReporteZona(agenteId, {
-        criterios: { tipo: body.tipo, operacion: body.operacion, zona: body.zona || '', perfilCliente },
+        criterios: { tipo: body.tipo, operacion: body.operacion, zona: body.zona || '', perfilCliente, prioridadesCliente },
         tituloCliente: body.tituloCliente || '',
         resumen,
         resumenZonaIA,
