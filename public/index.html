@@ -298,6 +298,7 @@
   .card .fuente.mobiliario { background: #f1e6ff; color: #6b21a8; }
   .card .fuente.capitalcorp { background: #dcfce8; color: #157a3d; }
   .card .fuente.alfabolivia { background: #ffe3fa; color: #a3157e; }
+  .card .fuente.mlx { background: #ede9fe; color: #5b21b6; }
   .card .tambien-en { font-size: 11px; color: var(--muted); margin: -4px 0 6px; }
   .card .cerca { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .03em; color: var(--warn); }
   .card .aviso-precio { font-size: 11px; color: var(--warn); background: var(--warn-soft); padding: 4px 8px; border-radius: var(--radius-xs); margin: 4px 0; }
@@ -1448,7 +1449,7 @@ async function buscar(r) {
   $('#tituloRes').textContent = 'Resultados para ' + r.cliente;
   $('#subRes').textContent = describir(r);
   $('#linksExt').innerHTML = '';
-  $('#zona-resultados').innerHTML = '<p class="cargando">Buscando en Century 21, RE/MAX, BienInmuebles, Mobiliario App, CapitalCorp y Alfa Bolivia…</p>';
+  $('#zona-resultados').innerHTML = '<p class="cargando">Buscando en Century 21, RE/MAX, BienInmuebles, Mobiliario App, CapitalCorp, Alfa Bolivia y MLX…</p>';
   $('#btnMapa').style.display = 'none';
   $('#mapaWrap').style.display = 'none';
   $('#btnMapaTxt').textContent = 'Ver en mapa';
@@ -1531,7 +1532,7 @@ async function buscar(r) {
     <div class="card" data-link="${encodeURIComponent(i.link)}">
       ${i.imagen ? `<div class="imgwrap"><img src="${i.imagen}" loading="lazy" alt=""></div>` : ''}
       <div class="cuerpo">
-        <div class="fuente ${i.fuente === 'RE/MAX' ? 'remax' : i.fuente === 'BienInmuebles' ? 'bien' : i.fuente === 'Mobiliario App' ? 'mobiliario' : i.fuente === 'CapitalCorp' ? 'capitalcorp' : i.fuente === 'Alfa Bolivia' ? 'alfabolivia' : 'c21'}">${i.fuente}${i.oficina ? ' · ' + i.oficina : ''}</div>
+        <div class="fuente ${i.fuente === 'RE/MAX' ? 'remax' : i.fuente === 'BienInmuebles' ? 'bien' : i.fuente === 'Mobiliario App' ? 'mobiliario' : i.fuente === 'CapitalCorp' ? 'capitalcorp' : i.fuente === 'Alfa Bolivia' ? 'alfabolivia' : i.fuente === 'MLX' ? 'mlx' : 'c21'}">${i.fuente}${i.oficina ? ' · ' + i.oficina : ''}</div>
         ${i.tambienEn && i.tambienEn.length ? `<div class="tambien-en">También en: ${i.tambienEn.map((t) => t.fuente).join(', ')}</div>` : ''}
         ${i.cercaPresupuesto ? '<div class="cerca">Cerca del presupuesto</div>' : ''}
         <div class="precio">${i.destaca ? '★ ' : ''}${i.precio ? 'U$S ' + i.precio.toLocaleString('es-BO') : 'Consultar precio'}</div>

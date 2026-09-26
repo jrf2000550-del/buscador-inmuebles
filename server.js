@@ -8,6 +8,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { handleMcpRequest } = require('./mcp/buscador-mcp-server');
 
 // Carga simple de .env (para la API key de IA), sin dependencias.
 (function cargarEnv() {
@@ -3496,6 +3497,107 @@ async function fetchAlfaBolivia(req, tc) {
   });
 }
 
+// ---------- MLX (mlx.bo) ----------
+// Competidor nuevo que José Luis pidió sumar el 2026-09-26 ("se nos suma
+// una competencia fuerte"). Investigado en vivo: es un portal nacional real
+// con inventario grande (4.474 avisos activos en toda Bolivia, ~2.800 en el
+// departamento de Santa Cruz), no una plataforma chica. A diferencia de las
+// otras 6 fuentes, expone TODO su inventario activo en un solo endpoint
+// público sin paginar (`GET /api/map-pins`, pensado para poblar el mapa de
+// su propia web) — no hace falta pedir página por página ni sincronizar en
+// 2do plano como Mobiliario/CapitalCorp/Alfa Bolivia. Se cachea unos
+// minutos en memoria porque el mismo pedido completo sirve para cualquier
+// tipo/operación/zona, no tiene sentido re-pedirlo por cada combinación.
+//
+// Limitaciones confirmadas en vivo: el endpoint no trae título, foto ni
+// contacto del asesor (eso vive en la ficha individual de cada propiedad —
+// enriquecerla a todas sería miles de pedidos extra, no vale la pena solo
+// para completar datos que ya alcanzan para buscar/filtrar). El título se
+// arma sintético (tipo + zona), mismo criterio que ya se usa en esta app
+// cuando una fuente no trae uno. El contacto del asesor tampoco se expone
+// públicamente en la ficha individual (todo pasa por un asistente de IA
+// propio de MLX, "MIA", que media el contacto) — a diferencia de RE/MAX/
+// BienInmuebles, acá no hay whatsapp/teléfono público que sacar ni con
+// enriquecimiento on-demand. Se descartan además ~3 avisos de demostración
+// propios de la plataforma (mls_code con "DEMO"), mezclados en los
+// resultados reales.
+const MLX_TIPO = {
+  terreno: 'terreno',
+  casa: 'casa',
+  departamento: 'departamento',
+  galpon: 'deposito',
+  terreno_comercial: 'terreno-comercial',
+  oficina: 'oficina',
+  local_comercial: 'local',
+  edificio: 'edificio',
+};
+const MLX_TIPOS_SOPORTADOS = new Set(Object.values(MLX_TIPO));
+const MLX_OPERACION = { sale: 'venta', rent: 'alquiler' };
+
+// Bounding box del departamento de Santa Cruz — el endpoint es nacional (La
+// Paz, Cochabamba, etc. mezclados); esta app está scopeada a Santa Cruz
+// como las otras 6 fuentes.
+function enSantaCruzMLX(pin) {
+  return pin.lng >= -64.5 && pin.lng <= -61.5 && pin.lat >= -19 && pin.lat <= -16;
+}
+
+let cacheMLX = null; // { timestamp, pins }
+const MLX_CACHE_TTL_MS = 5 * 60 * 1000;
+
+async function obtenerPinsMLX() {
+  if (cacheMLX && Date.now() - cacheMLX.timestamp < MLX_CACHE_TTL_MS) return cacheMLX.pins;
+  const data = await fetchJson('https://mlx.bo/api/map-pins');
+  if (!Array.isArray(data.pins)) throw new Error('Respuesta inesperada de MLX');
+  cacheMLX = { timestamp: Date.now(), pins: data.pins };
+  return data.pins;
+}
+
+function normalizarMLX(pin, tipo) {
+  let precio = pin.price != null ? Math.round(pin.price) : null;
+  const umbralTypo = MLX_OPERACION[pin.operation] === 'alquiler' ? 10 : 1000;
+  if (precio != null && precio < umbralTypo) precio = null;
+  const zonaTexto = pin.zone || '';
+  const tipoLabel = NOMBRE_TIPO_BUSQUEDA[tipo] || tipo;
+  return {
+    fuente: 'MLX',
+    titulo: `${tipoLabel.charAt(0).toUpperCase()}${tipoLabel.slice(1)} en ${zonaTexto || 'Santa Cruz'}`,
+    precio,
+    dormitorios: pin.bedrooms > 0 ? pin.bedrooms : null,
+    banos: pin.bathrooms > 0 ? pin.bathrooms : null,
+    m2Terreno: TIPOS_TERRENO.has(tipo) ? pin.m2 : null,
+    m2Construccion: TIPOS_TERRENO.has(tipo) ? null : pin.m2,
+    zona: zonaTexto,
+    direccion: '',
+    lat: pin.lat ?? null,
+    lon: pin.lng ?? null,
+    imagen: null,
+    imagenes: [],
+    link: `https://mlx.bo/propiedad/${pin.id}`,
+    descripcion: '',
+    fecha: null,
+    oficina: '',
+    asesor: '',
+    whatsapp: '',
+    telefono: '',
+    email: '',
+  };
+}
+
+async function fetchMLX(req) {
+  if (!MLX_TIPOS_SOPORTADOS.has(req.tipo)) return [];
+  const pins = await obtenerPinsMLX();
+  const operacionEsperada = req.operacion === 'alquiler' ? 'rent' : 'sale';
+  return pins
+    .filter(
+      (p) =>
+        MLX_TIPO[p.type] === req.tipo &&
+        p.operation === operacionEsperada &&
+        enSantaCruzMLX(p) &&
+        !/demo/i.test(p.mls_code || '')
+    )
+    .map((p) => normalizarMLX(p, req.tipo));
+}
+
 // ---------- Matching de 1 propiedad contra 1 requerimiento ----------
 // Extraído de buscarTodo (antes vivía inline en su cadena de .filter()) para
 // poder reusarlo comparando UNA propiedad nueva (ficha cargada a mano, o un
@@ -3594,7 +3696,7 @@ function esMismoInmueble(a, b) {
 
 // Orden de preferencia para decidir cuál copia queda como tarjeta principal
 // (la que trae más datos útiles gana: más fotos, contacto real del captador).
-const PRIORIDAD_FUENTE_DUPLICADO = { 'Century 21': 1, 'RE/MAX': 2, BienInmuebles: 3, 'Mobiliario App': 4, CapitalCorp: 5, 'Alfa Bolivia': 6 };
+const PRIORIDAD_FUENTE_DUPLICADO = { 'Century 21': 1, 'RE/MAX': 2, BienInmuebles: 3, 'Mobiliario App': 4, CapitalCorp: 5, 'Alfa Bolivia': 6, MLX: 7 };
 
 // Agrupa por precio EXACTO antes de comparar — con miles de avisos, comparar
 // cada par sería O(n²) sobre toda la lista; como esMismoInmueble siempre
@@ -3683,13 +3785,29 @@ async function buscarTodo(req) {
   // frontend, para que el agente vea "BienInmuebles: no disponible ahora
   // mismo" en vez de asumir en silencio que ya buscó en todos lados.
   const estadoFuentes = {};
+  // sincronizadoEn (José Luis, 2026-09-26: "necesito todo actualizado"):
+  // Century21/RE-MAX/BienInmuebles/MLX escanean en vivo en cada búsqueda,
+  // pero Mobiliario App/CapitalCorp/Alfa Bolivia leen una caché que se
+  // resincroniza en segundo plano cada tantas horas (ver chequearResync* —
+  // forzar un re-scrape sincrónico acá sería lento y arriesgado: Mobiliario
+  // App solo tiene ~7.900 propiedades). En vez de fingir que las 6 fuentes
+  // son igual de frescas, se manda la fecha real de la última sincronización
+  // de cada una para que el agente la cite honesto, nunca la esconda.
+  function fechaSyncDe(nombre) {
+    try {
+      if (nombre === 'Mobiliario App') return leerCacheMobiliario().sincronizadoEn || null;
+      if (nombre === 'CapitalCorp') return leerCacheCapitalCorp().sincronizadoEn || null;
+      if (nombre === 'Alfa Bolivia') return leerCacheAlfaBolivia().sincronizadoEn || null;
+    } catch (e) { /* sin caché todavía */ }
+    return null; // null = escanea en vivo en este mismo request, no aplica "sincronizado"
+  }
   async function fetchConEstado(nombre, promesa) {
     try {
       const items = await promesa;
-      estadoFuentes[nombre] = { ok: true };
+      estadoFuentes[nombre] = { ok: true, sincronizadoEn: fechaSyncDe(nombre) };
       return items;
     } catch (e) {
-      estadoFuentes[nombre] = { ok: false, motivo: e.message || 'Error desconocido' };
+      estadoFuentes[nombre] = { ok: false, motivo: e.message || 'Error desconocido', sincronizadoEn: fechaSyncDe(nombre) };
       return [];
     }
   }
@@ -3707,24 +3825,25 @@ async function buscarTodo(req) {
   // haciendo matcheaPropiedad, igual que con las otras 3 fuentes.
   const claveCacheBusqueda = `${req.tipo}|${req.operacion}`;
   const cacheado = cacheBusquedaCruda.get(claveCacheBusqueda);
-  let c21, remax, bien, mobiliario, capitalcorp, alfabolivia;
+  let c21, remax, bien, mobiliario, capitalcorp, alfabolivia, mlx;
   if (cacheado && Date.now() - cacheado.timestamp < CACHE_BUSQUEDA_TTL_MS) {
-    ({ c21, remax, bien, mobiliario, capitalcorp, alfabolivia } = cacheado);
+    ({ c21, remax, bien, mobiliario, capitalcorp, alfabolivia, mlx } = cacheado);
     Object.assign(estadoFuentes, cacheado.estadoFuentes);
   } else {
-    [c21, remax, bien, mobiliario, capitalcorp, alfabolivia] = await Promise.all([
+    [c21, remax, bien, mobiliario, capitalcorp, alfabolivia, mlx] = await Promise.all([
       fetchConEstado('Century 21', fetchC21(req)),
       fetchConEstado('RE/MAX', fetchRemax(req)),
       fetchConEstado('BienInmuebles', fetchBienInmuebles(req, tc)),
       fetchConEstado('Mobiliario App', fetchMobiliario(req, tc)),
       fetchConEstado('CapitalCorp', fetchCapitalCorp(req)),
       fetchConEstado('Alfa Bolivia', fetchAlfaBolivia(req, tc)),
+      fetchConEstado('MLX', fetchMLX(req)),
     ]);
-    // Solo se cachea si las 6 fuentes respondieron bien — un resultado
+    // Solo se cachea si todas las fuentes respondieron bien — un resultado
     // parcial por un fallo puntual de un portal no debe quedar pegado 5
     // minutos para todos los demás agentes que busquen lo mismo.
     if (Object.values(estadoFuentes).every((e) => e.ok)) {
-      cacheBusquedaCruda.set(claveCacheBusqueda, { timestamp: Date.now(), c21, remax, bien, mobiliario, capitalcorp, alfabolivia, estadoFuentes: { ...estadoFuentes } });
+      cacheBusquedaCruda.set(claveCacheBusqueda, { timestamp: Date.now(), c21, remax, bien, mobiliario, capitalcorp, alfabolivia, mlx, estadoFuentes: { ...estadoFuentes } });
     }
   }
 
@@ -3734,7 +3853,7 @@ async function buscarTodo(req) {
   // búsqueda que caiga en la misma clave (mismo tipo+operación) durante los
   // 5 minutos de vigencia; sin clonar, dos agentes buscando con distinto
   // precio/zona se pisarían esos campos entre sí.
-  let items = [...c21, ...remax, ...bien, ...mobiliario, ...capitalcorp, ...alfabolivia].map((i) => ({ ...i }));
+  let items = [...c21, ...remax, ...bien, ...mobiliario, ...capitalcorp, ...alfabolivia, ...mlx].map((i) => ({ ...i }));
 
   // tipo/operación de la búsqueda que los trajo — todos los items de este
   // batch vienen de la misma categoría (los 6 fetch* reciben el mismo req),
@@ -3764,6 +3883,7 @@ async function buscarTodo(req) {
     'Mobiliario App': mobiliario.length,
     CapitalCorp: capitalcorp.length,
     'Alfa Bolivia': alfabolivia.length,
+    MLX: mlx.length,
   };
 
   // El nivel se asigna ACÁ (no dentro de los normalizadores normalizarC21/
@@ -3786,7 +3906,7 @@ async function buscarTodo(req) {
       (a.precio ?? 1e12) - (b.precio ?? 1e12)
   );
 
-  const porFuente = { 'Century 21': 0, 'RE/MAX': 0, BienInmuebles: 0, 'Mobiliario App': 0, CapitalCorp: 0, 'Alfa Bolivia': 0 };
+  const porFuente = { 'Century 21': 0, 'RE/MAX': 0, BienInmuebles: 0, 'Mobiliario App': 0, CapitalCorp: 0, 'Alfa Bolivia': 0, MLX: 0 };
   for (const i of items) porFuente[i.fuente] = (porFuente[i.fuente] || 0) + 1;
   const cantidadCerca = items.filter((i) => i.cercaPresupuesto).length;
 
@@ -3815,6 +3935,54 @@ async function buscarTodo(req) {
   };
 }
 
+// resumenMercado: mismo resumen que ya usaba solo la ruta HTTP /api/buscar-mercado,
+// extraído para reusarlo tal cual desde el conector MCP remoto (mcp/buscador-mcp-server.js)
+// -- cero lógica nueva, un segundo llamador de la misma función.
+async function resumenMercado(qp) {
+  const TIPOS_TERRENO_RE = /^(terreno|terreno-comercial|rural|rancho|agricolas|ganaderas)$/;
+  const NO_ES_VENTA_RE = /\balquil|anticr[eé]tic/i;
+  function percentilLocal(valores, p) {
+    if (!valores.length) return null;
+    const k = (valores.length - 1) * p, f = Math.floor(k), c = Math.ceil(k);
+    return Math.round(valores[f] + (valores[c] - valores[f]) * (k - f));
+  }
+  const tipo = String(qp.tipo || '').toLowerCase().trim();
+  const operacion = qp.operacion === 'alquiler' ? 'alquiler' : 'venta';
+  const limite = Math.max(1, Math.min(40, Number(qp.limite) || 20));
+  const resultado = await buscarTodo(qp);
+  const todos = resultado.listados || [];
+  const separados = operacion === 'venta' ? todos.filter((i) => NO_ES_VENTA_RE.test(i.titulo || '')) : [];
+  const limpios = operacion === 'venta' ? todos.filter((i) => !NO_ES_VENTA_RE.test(i.titulo || '')) : todos;
+  const campo = TIPOS_TERRENO_RE.test(tipo) ? 'm2Terreno' : 'm2Construccion';
+  const am = resultado.analisisMercado || null;
+  const outlier = {};
+  ((am && am.comparablesDetalle) || []).forEach((c) => { if (c.link) outlier[c.link] = !!c.esOutlier; });
+  const valores = limpios.filter((i) => i.precio && i[campo] && !outlier[i.link]).map((i) => i.precio / i[campo]).sort((x, y) => x - y);
+  const fila = (i) => ({
+    fuente: i.fuente, titulo: i.titulo, precioUsd: i.precio ?? null,
+    m2Construccion: i.m2Construccion ?? null, m2Terreno: i.m2Terreno ?? null,
+    usdM2: i.precio && i[campo] ? Math.round(i.precio / i[campo]) : null,
+    dormitorios: i.dormitorios ?? null, zona: i.zona || null, link: i.link || null,
+    mencionaPalabras: !!i.destaca, outlier: !!outlier[i.link], avisoPrecio: i.avisoPrecio || null,
+  });
+  return {
+    consultado: new Date().toISOString(), parametros: qp,
+    cantidadAvisos: todos.length, separadosPorDecirAlquilerOAnticretico: separados.length,
+    porFuente: resultado.porFuente || null, estadoFuentes: resultado.estadoFuentes || null,
+    mercadoLimpio: {
+      comparables: valores.length, campoM2: campo,
+      usdM2Mediana: percentilLocal(valores, 0.5), usdM2P25: percentilLocal(valores, 0.25), usdM2P75: percentilLocal(valores, 0.75),
+      criterio: 'Avisos de este filtro, sin los que dicen alquiler/anticrético en el título y sin los outliers que marca el Buscador. Son precios PEDIDOS, no cierres.',
+    },
+    mercadoBuscador: am ? {
+      cantidadComparables: am.cantidadComparables, usdM2Mediana: am.precioM2Mediana, usdM2Ponderado: am.precioM2Ponderado,
+      confiabilidad: am.confiabilidadGlobal || null,
+    } : null,
+    avisos: limpios.slice(0, limite).map(fila),
+    avisosSeparados: separados.slice(0, 8).map(fila),
+  };
+}
+
 // ---------- Análisis Comparativo de Mercado (ACM) ----------
 // Estadísticas puras (sin IA, sin costo) sobre los mismos comparables que ya
 // trae la búsqueda — mediana de precio y de precio/m² son más confiables que
@@ -3837,7 +4005,7 @@ function mediana(numsOrdenados) {
 // número que ve el agente no depende de qué tan bien redactó el modelo esa
 // tanda.
 const PESO_NIVEL = { A: 3, B: 1, C: 0.5 };
-const PESO_FUENTE = { 'Century 21': 1.15, 'RE/MAX': 1.15, BienInmuebles: 0.9, 'Mobiliario App': 0.9, CapitalCorp: 0.9, 'Alfa Bolivia': 0.9 };
+const PESO_FUENTE = { 'Century 21': 1.15, 'RE/MAX': 1.15, BienInmuebles: 0.9, 'Mobiliario App': 0.9, CapitalCorp: 0.9, 'Alfa Bolivia': 0.9, MLX: 0.9 };
 const PESO_OUTLIER_B = 0.25; // a un B marcado outlier no se lo excluye, se le baja el peso a esto
 const UMBRAL_OUTLIER = 0.25; // desviación >25% de la mediana (solo-B, o de su cuartil en terreno) = outlier
 const TOPE_PESO_FRACCION = 0.15; // ningún comparable puede aportar más del 15% del peso total
@@ -4712,6 +4880,25 @@ function camposRequerimiento(body) {
 // varios agentes van a probarla en simultáneo.
 async function manejarRequest(req, res) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+
+  // ---- /mcp -- conector MCP real del Buscador (ver mcp/buscador-mcp-server.js).
+  // Se resuelve antes que cualquier otra ruta porque el transporte MCP maneja
+  // su propia respuesta (incluye modo SSE) -- nunca pasa por json().
+  if (url.pathname === '/mcp') {
+    // Sin GET: abre el stream SSE "standalone" del SDK (para notificaciones
+    // que este server nunca manda) y queda colgado para siempre -- confirmado
+    // en vivo 2026-09-26, colgaba la carga del Artifact que declara este
+    // conector. 405 explícito en vez de dejar que el transporte la acepte.
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      return res.end(JSON.stringify({ error: 'Este conector solo acepta POST (sin notificaciones server-initiated).' }));
+    }
+    let parsedBody;
+    if (req.method === 'POST') parsedBody = await leerBody(req);
+    try { await handleMcpRequest(req, res, resumenMercado, parsedBody); }
+    catch (e) { console.error('MCP error:', e); if (!res.headersSent) json(res, 500, { error: e.message }); }
+    return;
+  }
 
   // Webhook de extracción en tiempo real — lo llama un Workflow de GHL cada
   // vez que llega un mensaje nuevo en la cuenta de Ingrid (o cualquier otra
@@ -5926,6 +6113,22 @@ async function manejarRequest(req, res) {
       return json(res, 200, { disponible: true, campos });
     } catch (e) {
       return json(res, 200, { disponible: false, campos: null, error: e.message });
+    }
+  }
+
+  // Fase 2 (Sofymar): mismo resumen de mercado (mediana, P25-P75, separación
+  // alquiler/anticrético, outliers) que ya calculaba mcp-server.js para el
+  // uso local -- acá queda disponible por HTTP para cualquier consumidor
+  // remoto (el Portal de Sofymar, o cualquier agente), sin depender de que
+  // el Buscador corra en la computadora de José Luis. No se tocó buscarTodo
+  // ni ninguna lógica de scraping/portales -- solo se expone el mismo
+  // resumen ya probado, por una ruta nueva.
+  if (url.pathname === '/api/buscar-mercado' && req.method === 'GET') {
+    const qp = Object.fromEntries(url.searchParams);
+    try {
+      return json(res, 200, await resumenMercado(qp));
+    } catch (e) {
+      return json(res, 500, { error: e.message });
     }
   }
 
