@@ -678,12 +678,17 @@ const DIAS_PRUEBA_GRATIS = 14;
 const AGENTES_SIN_TRIAL = new Set(['af7749fc', '00753b8a']); // Ingrid Cuellar, Jose Parejas
 
 function estadoTrial(agente) {
-  // `sinTrial` es la vía normal para eximir a alguien desde el panel de
-  // admin (botón "Quitar aviso de prueba") — AGENTES_SIN_TRIAL queda como
-  // hardcodeo legacy de antes de que existiera el botón, para los 2 clientes
-  // reales originales (Ingrid, Jose Parejas).
+  // `sinTrial` es la vía normal para eximir a alguien para siempre desde el
+  // panel de admin (botón "Quitar aviso de prueba") — AGENTES_SIN_TRIAL
+  // queda como hardcodeo legacy de antes de que existiera el botón, para
+  // los 2 clientes reales originales (Ingrid, Jose Parejas).
   if (agente.sinTrial || AGENTES_SIN_TRIAL.has(agente.id)) return { aplica: false, diasRestantes: null, vencido: false };
-  const diasTranscurridos = Math.floor((Date.now() - new Date(agente.creado).getTime()) / 86400000);
+  // `trialDesde` — José Luis pidió el 2026-09-28 poder "volver a activar la
+  // prueba gratis" de alguien que ya se le venció (sin eximirlo para
+  // siempre, solo darle 14 días más desde ahora). Si nunca se extendió, se
+  // cuenta desde la fecha real de registro como siempre.
+  const desde = agente.trialDesde || agente.creado;
+  const diasTranscurridos = Math.floor((Date.now() - new Date(desde).getTime()) / 86400000);
   const diasRestantes = DIAS_PRUEBA_GRATIS - diasTranscurridos;
   return { aplica: true, diasRestantes, vencido: diasRestantes <= 0 };
 }
@@ -5271,6 +5276,20 @@ async function manejarRequest(req, res) {
       const agente = lista.find((a) => a.id === id);
       if (!agente) return json(res, 404, { error: 'No existe ese agente.' });
       agente.sinTrial = accion === 'exentar-trial';
+      guardarAgentes(lista);
+      return json(res, 200, { ok: true, trial: estadoTrial(agente) });
+    }
+
+    // Volver a darle 14 días de prueba a alguien que ya se le venció, sin
+    // eximirlo para siempre (eso es sinTrial, arriba) — José Luis lo pidió
+    // el mismo día: "un botón para volver a activarles la prueba gratis".
+    const mExtenderTrial = url.pathname.match(/^\/api\/admin\/agentes\/([^/]+)\/extender-trial$/);
+    if (mExtenderTrial && req.method === 'POST') {
+      const [, id] = mExtenderTrial;
+      const lista = leerAgentes();
+      const agente = lista.find((a) => a.id === id);
+      if (!agente) return json(res, 404, { error: 'No existe ese agente.' });
+      agente.trialDesde = new Date().toISOString();
       guardarAgentes(lista);
       return json(res, 200, { ok: true, trial: estadoTrial(agente) });
     }
