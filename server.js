@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { handleMcpRequest } = require('./mcp/buscador-mcp-server');
+const { mediana, esComparableSano, calcularUsdM2Item, M2_CONSTRUCCION_MIN, M2_TERRENO_MIN, PRECIO_M2_MIN, PRECIO_M2_MAX } = require('./lib/price-semantics');
 
 // Carga simple de .env (para la API key de IA), sin dependencias.
 (function cargarEnv() {
@@ -677,7 +678,11 @@ const DIAS_PRUEBA_GRATIS = 14;
 const AGENTES_SIN_TRIAL = new Set(['af7749fc', '00753b8a']); // Ingrid Cuellar, Jose Parejas
 
 function estadoTrial(agente) {
-  if (AGENTES_SIN_TRIAL.has(agente.id)) return { aplica: false, diasRestantes: null, vencido: false };
+  // `sinTrial` es la vía normal para eximir a alguien desde el panel de
+  // admin (botón "Quitar aviso de prueba") — AGENTES_SIN_TRIAL queda como
+  // hardcodeo legacy de antes de que existiera el botón, para los 2 clientes
+  // reales originales (Ingrid, Jose Parejas).
+  if (agente.sinTrial || AGENTES_SIN_TRIAL.has(agente.id)) return { aplica: false, diasRestantes: null, vencido: false };
   const diasTranscurridos = Math.floor((Date.now() - new Date(agente.creado).getTime()) / 86400000);
   const diasRestantes = DIAS_PRUEBA_GRATIS - diasTranscurridos;
   return { aplica: true, diasRestantes, vencido: diasRestantes <= 0 };
@@ -3957,11 +3962,19 @@ async function resumenMercado(qp) {
   const am = resultado.analisisMercado || null;
   const outlier = {};
   ((am && am.comparablesDetalle) || []).forEach((c) => { if (c.link) outlier[c.link] = !!c.esOutlier; });
-  const valores = limpios.filter((i) => i.precio && i[campo] && !outlier[i.link]).map((i) => i.precio / i[campo]).sort((x, y) => x - y);
+  // PRICE SEMANTICS (2026-09-27, ver lib/price-semantics.js): antes acá el
+  // guard era solo `i.precio && i[campo]`, sin pasar por esComparableSano --
+  // un aviso real de RE/MAX con construction_area_m=1 (m² implausible, casi
+  // seguro un placeholder mal cargado en el origen) daba usdM2 = precio/1 =
+  // precio TOTAL mostrado como si fuera precio POR M². calcularEstadisticasMercado
+  // (más abajo) ya filtraba esto correctamente -- ahora resumenMercado usa el
+  // MISMO chequeo de cordura, para que mercadoLimpio/avisos (lo que lee el
+  // Mapa de Calor del Portal) nunca contradiga a mercadoBuscador.
+  const valores = limpios.filter((i) => i.precio && esComparableSano(i, campo) && !outlier[i.link]).map((i) => i.precio / i[campo]).sort((x, y) => x - y);
   const fila = (i) => ({
     fuente: i.fuente, titulo: i.titulo, precioUsd: i.precio ?? null,
     m2Construccion: i.m2Construccion ?? null, m2Terreno: i.m2Terreno ?? null,
-    usdM2: i.precio && i[campo] ? Math.round(i.precio / i[campo]) : null,
+    usdM2: calcularUsdM2Item(i, campo),
     dormitorios: i.dormitorios ?? null, zona: i.zona || null, link: i.link || null,
     mencionaPalabras: !!i.destaca, outlier: !!outlier[i.link], avisoPrecio: i.avisoPrecio || null,
   });
@@ -3989,12 +4002,9 @@ async function resumenMercado(qp) {
 // el promedio acá porque un par de avisos con error de tipeo o outliers de
 // lujo no deberían mover tanto la referencia.
 
-function mediana(numsOrdenados) {
-  const n = numsOrdenados.length;
-  const mitad = Math.floor(n / 2);
-  const valor = n % 2 !== 0 ? numsOrdenados[mitad] : (numsOrdenados[mitad - 1] + numsOrdenados[mitad]) / 2;
-  return Math.round(valor);
-}
+// mediana() viene de lib/price-semantics.js (requerido arriba) -- único lugar
+// que la define, para que resumenMercado (mercadoLimpio/avisos) y esta
+// función (mercadoBuscador) nunca puedan divergir en el mismo cálculo.
 
 // Pondera cada comparable en vez de tratarlos todos igual: nivel de origen
 // del dato (A=cierre real cargado a mano, B=scrapeado, C=referencia informal
@@ -4026,23 +4036,11 @@ const TOPE_PESO_FRACCION = 0.15; // ningún comparable puede aportar más del 15
 //    no puede distinguir "caro real" de "typo" ahí, así que el único filtro
 //    de precio para terreno es la segmentación por cuartiles + outlier de
 //    más abajo, que compara cada lote contra otros de tamaño similar.
-const M2_CONSTRUCCION_MIN = 15;
-const M2_TERRENO_MIN = 10;
-const PRECIO_M2_MIN = 50;
-const PRECIO_M2_MAX = 10000;
-
-function esComparableSano(item, campoM2) {
-  const m2 = item[campoM2];
-  if (!(m2 > 0)) return false;
-  if (campoM2 === 'm2Construccion') {
-    if (m2 < M2_CONSTRUCCION_MIN) return false;
-    const precioM2 = item.precio / m2;
-    if (precioM2 < PRECIO_M2_MIN || precioM2 > PRECIO_M2_MAX) return false;
-  } else if (campoM2 === 'm2Terreno') {
-    if (m2 < M2_TERRENO_MIN) return false;
-  }
-  return true;
-}
+// M2_CONSTRUCCION_MIN/M2_TERRENO_MIN/PRECIO_M2_MIN/PRECIO_M2_MAX y
+// esComparableSano() vienen de lib/price-semantics.js (requerido arriba) --
+// mismo motivo que mediana() arriba: un único lugar que decide qué m²/precio
+// por m² es confiable, para que ningún cálculo (acá o en resumenMercado)
+// pueda usar un guard distinto y más débil por accidente.
 
 function factorRecencia(fecha) {
   if (!fecha) return 1; // sin fecha = neutral, nunca se penaliza la ausencia del dato
@@ -5259,6 +5257,22 @@ async function manejarRequest(req, res) {
       agente.activo = accion === 'activar';
       guardarAgentes(lista);
       return json(res, 200, { ok: true, activo: agente.activo });
+    }
+
+    // Quitar/poner el aviso de prueba gratuita — José Luis lo pidió el
+    // 2026-09-28 después de que casi todas las cuentas reales (la suya
+    // incluida) llegaron a los 14 días y empezaron a ver el aviso de
+    // vencida. Antes la única forma de eximir a alguien era hardcodear su id
+    // en AGENTES_SIN_TRIAL y redesplegar — ahora es un botón.
+    const mTrial = url.pathname.match(/^\/api\/admin\/agentes\/([^/]+)\/(exentar-trial|aplicar-trial)$/);
+    if (mTrial && req.method === 'POST') {
+      const [, id, accion] = mTrial;
+      const lista = leerAgentes();
+      const agente = lista.find((a) => a.id === id);
+      if (!agente) return json(res, 404, { error: 'No existe ese agente.' });
+      agente.sinTrial = accion === 'exentar-trial';
+      guardarAgentes(lista);
+      return json(res, 200, { ok: true, trial: estadoTrial(agente) });
     }
 
     // Alertas de match de TODOS los agentes juntas (para el panel de José

@@ -297,6 +297,7 @@ async function cargarAgentes() {
             <td>${a.ghlConectado ? `<span class="badge activo" title="${a.ghlLocationId}">Conectado</span>` : '<span class="badge revocado">Sin conectar</span>'}</td>
             <td style="white-space:nowrap">
               <button type="button" class="chico ${a.activo ? 'fantasma' : ''}" onclick="toggleAgente('${a.id}', ${a.activo})">${a.activo ? 'Revocar' : 'Reactivar'}</button>
+              ${a.trial.aplica ? `<button type="button" class="chico fantasma" onclick="toggleTrial('${a.id}', true)">Quitar aviso de prueba</button>` : `<button type="button" class="chico fantasma" onclick="toggleTrial('${a.id}', false)">Volver a poner prueba</button>`}
               <button type="button" class="chico fantasma" onclick="abrirFormGHL('${a.id}', '${a.nombre.replace(/'/g, "\\'")}')">${a.ghlConectado ? 'Editar GHL' : 'Conectar GHL'}</button>
             </td>
           </tr>
@@ -363,6 +364,12 @@ async function guardarGHL() {
 
 async function toggleAgente(id, estaActivo) {
   const accion = estaActivo ? 'revocar' : 'activar';
+  await adminFetch(`/api/admin/agentes/${id}/${accion}`, { method: 'POST' });
+  cargarAgentes();
+}
+
+async function toggleTrial(id, trialAplica) {
+  const accion = trialAplica ? 'exentar-trial' : 'aplicar-trial';
   await adminFetch(`/api/admin/agentes/${id}/${accion}`, { method: 'POST' });
   cargarAgentes();
 }
