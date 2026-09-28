@@ -1346,6 +1346,33 @@ function zonaMatch(item, zona) {
   return re.test(quitarAcentos(texto));
 }
 
+// Zona dibujada a mano en el mapa (ver matcheaPropiedad) — llega como JSON
+// de pares [lat, lon] en vez de nombres de zona. `raw` es lo que manda el
+// frontend en req.poligono (querystring, siempre string).
+function parsePoligono(raw) {
+  if (!raw) return null;
+  try {
+    const puntos = JSON.parse(raw);
+    if (!Array.isArray(puntos) || puntos.length < 3) return null;
+    if (!puntos.every((p) => Array.isArray(p) && p.length === 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]))) return null;
+    return puntos;
+  } catch {
+    return null;
+  }
+}
+
+// Ray-casting estándar (funciona con cualquier polígono simple, convexo o no).
+function puntoEnPoligono(lat, lon, poligono) {
+  let dentro = false;
+  for (let i = 0, j = poligono.length - 1; i < poligono.length; j = i++) {
+    const [latI, lonI] = poligono[i];
+    const [latJ, lonJ] = poligono[j];
+    const cruza = lonI > lon !== lonJ > lon && lat < ((latJ - latI) * (lon - lonI)) / (lonJ - lonI) + latI;
+    if (cruza) dentro = !dentro;
+  }
+  return dentro;
+}
+
 async function fetchJson(url) {
   const res = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'application/json' }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -3619,8 +3646,19 @@ async function fetchMLX(req) {
 // formulario de búsqueda); la sincronización GHL/Mobiliario la usa al revés,
 // 1 propiedad contra N requerimientos guardados — misma función en ambos casos.
 function matcheaPropiedad(item, req) {
-  const zonas = parseZonas(req.zona);
-  if (zonas.length && !zonas.some((z) => zonaMatch(item, z))) return false;
+  // Zona dibujada a mano en el mapa — José Luis lo pidió el 2026-09-28, en
+  // vez de escribir el nombre de la zona. Cuando viene un polígono válido
+  // REEMPLAZA al filtro de texto (no se combinan): solo entran avisos con
+  // coordenadas reales dentro de la forma dibujada. Un aviso sin lat/lon
+  // queda afuera de un polígono (no hay forma de saber si cae adentro), a
+  // diferencia del filtro de texto que sí evalúa título/zona/descripción.
+  const poligono = parsePoligono(req.poligono);
+  if (poligono) {
+    if (item.lat == null || item.lon == null || !puntoEnPoligono(item.lat, item.lon, poligono)) return false;
+  } else {
+    const zonas = parseZonas(req.zona);
+    if (zonas.length && !zonas.some((z) => zonaMatch(item, z))) return false;
+  }
 
   const { precioMinUsd, precioMaxUsd } = convertirPresupuesto(req);
   const MARGEN_PRECIO = 0.12;
@@ -3932,6 +3970,7 @@ async function buscarTodo(req) {
     porFuenteBruto,
     estadoFuentes,
     zonas,
+    poligonoActivo: !!parsePoligono(req.poligono),
     tc,
     moneda,
     precioMinUsd,
@@ -4856,6 +4895,12 @@ function camposRequerimiento(body) {
     operacion: body.operacion === 'alquiler' ? 'alquiler' : 'venta',
     tipo: TIPOS.has(body.tipo) ? body.tipo : 'casa',
     zona: (body.zona || '').trim(),
+    // Zona dibujada a mano en el mapa (array de [lat,lon] en JSON) — cuando
+    // está presente reemplaza al filtro de texto de `zona` (ver
+    // matcheaPropiedad/parsePoligono). Se guarda tal cual llega, sin validar
+    // acá — parsePoligono descarta cualquier cosa inválida al momento de
+    // buscar, así que nunca puede corromper un requerimiento guardado.
+    poligono: body.poligono || '',
     precioMin: body.precioMin || '',
     precioMax: body.precioMax || '',
     moneda: body.moneda === 'bob' ? 'bob' : 'usd',
